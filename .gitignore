@@ -1,0 +1,38 @@
+# Nix specific ignores
+.direnv/
+result/
+
+# Node / TypeScript
+node_modules/
+build/
+dist/
+*.tsbuildinfo
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.local
+.env.*.local
+*credentials.yaml
+
+# E2E Test Diagnostics (temporary debugging artifacts)
+tests/e2e/*-diagnostic.test.js
+tests/e2e/minimal-*.test.js
+tests/e2e/debug-*.test.js
+tests/e2e/DEBUG_*.txt
+tests/e2e/DEBUG_*.md
+
+# Database
+*.sqlite
+*.sqlite3
+*.db

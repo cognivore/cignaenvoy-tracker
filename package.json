@@ -1,0 +1,21 @@
+{
+  "name": "cignaenvoy-tracker",
+  "version": "0.1.0",
+  "description": "Guide for using LLMs and Local-First Databases to submit Cigna Envoy documents",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test:e2e": "node --test tests/e2e/**/*.test.js"
+  },
+  "keywords": [
+    "cigna-envoy",
+    "llm",
+    "local-first",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "selenium-webdriver": "^4.25.0"
+  }
+}
