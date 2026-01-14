@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bauhaus-red: #BE3144;
+  --bauhaus-yellow: #F5B700;
+  --bauhaus-blue: #1B4965;
+  --bauhaus-black: #0D0D0D;
+  --bauhaus-white: #FAFAFA;
+  --bauhaus-gray: #4A4A4A;
+  --bauhaus-lightgray: #E8E8E8;
+}
+
+body {
+  margin: 0;
+  font-family: 'DM Sans', system-ui, sans-serif;
+  background-color: var(--bauhaus-white);
+  color: var(--bauhaus-black);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Bauhaus-inspired geometric accents */
+.bauhaus-accent {
+  position: relative;
+}
+
+.bauhaus-accent::before {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background-color: var(--bauhaus-yellow);
+  border-radius: 50%;
+  top: 0;
+  left: -20px;
+}
+
+/* Grid system */
+.bauhaus-grid {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+
+/* Card base */
+.bauhaus-card {
+  background: white;
+  border: 2px solid var(--bauhaus-black);
+  padding: 1.5rem;
+  position: relative;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.bauhaus-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 4px 4px 0 var(--bauhaus-black);
+}
+
+/* Status indicators */
+.status-processed {
+  background-color: var(--bauhaus-blue);
+  color: white;
+}
+
+.status-pending {
+  background-color: var(--bauhaus-yellow);
+  color: var(--bauhaus-black);
+}
+
+.status-rejected {
+  background-color: var(--bauhaus-red);
+  color: white;
+}
+
+/* Match score bars */
+.score-bar {
+  height: 8px;
+  background: var(--bauhaus-lightgray);
+  position: relative;
+  overflow: hidden;
+}
+
+.score-bar-fill {
+  height: 100%;
+  background: var(--bauhaus-blue);
+  transition: width 0.3s ease;
+}
+
+.score-bar-fill.high {
+  background: var(--bauhaus-blue);
+}
+
+.score-bar-fill.medium {
+  background: var(--bauhaus-yellow);
+}
+
+.score-bar-fill.low {
+  background: var(--bauhaus-red);
+}

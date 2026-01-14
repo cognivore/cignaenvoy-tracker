@@ -36,3 +36,13 @@ tests/e2e/DEBUG_*.md
 *.sqlite
 *.sqlite3
 *.db
+
+# Local data storage (JSON files)
+data/
+frontend/node_modules/
+frontend/dist/
+
+# Dev logs and pids
+.dev-logs/
+.dev-pids/
+data/debug/

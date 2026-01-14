@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run tests/unit",
     "test:e2e": "vitest run tests/e2e --test-timeout=60000",
-    "test": "pnpm typecheck && pnpm test:unit && pnpm test:e2e"
+    "test": "pnpm typecheck && pnpm test:unit && pnpm test:e2e",
+    "api": "npx tsx src/server/api.ts"
   },
   "keywords": [
     "cigna-envoy",

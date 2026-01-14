@@ -63,3 +63,40 @@ export {
 // Reference data
 export type { Country, Currency, Network } from "./reference.js";
 export { COUNTRIES, CURRENCIES, CURRENCY_CODES, NETWORKS } from "./reference.js";
+
+// Scraped claim types (from Cigna Envoy portal)
+export type {
+  ScrapedClaim,
+  ScrapedLineItem,
+  ScrapedClaimStatus,
+  CreateScrapedClaimInput,
+} from "./scraped-claim.js";
+export { SCRAPED_CLAIM_STATUSES } from "./scraped-claim.js";
+
+// Medical document types (from email/attachment dumps)
+export type {
+  MedicalDocument,
+  DocumentSourceType,
+  DocumentClassification,
+  DetectedAmount,
+  CreateMedicalDocumentInput,
+} from "./medical-document.js";
+export {
+  DOCUMENT_SOURCE_TYPES,
+  DOCUMENT_CLASSIFICATIONS,
+  MEDICAL_KEYWORDS,
+} from "./medical-document.js";
+
+// Document-claim assignment types
+export type {
+  DocumentClaimAssignment,
+  AssignmentStatus,
+  MatchReasonType,
+  CreateAssignmentInput,
+  UpdateAssignmentInput,
+} from "./assignment.js";
+export {
+  ASSIGNMENT_STATUSES,
+  MATCH_REASON_TYPES,
+  MATCH_THRESHOLDS,
+} from "./assignment.js";
