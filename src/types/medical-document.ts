@@ -61,6 +61,23 @@ export interface DetectedAmount {
 }
 
 /**
+ * Manual payment override set by user when OCR detection is incorrect.
+ */
+export interface PaymentOverride {
+  /** The corrected amount */
+  amount: number;
+
+  /** Currency code (e.g., "EUR", "GBP", "USD") */
+  currency: string;
+
+  /** Optional note explaining why the override was made */
+  note?: string;
+
+  /** Timestamp when override was set */
+  updatedAt: Date;
+}
+
+/**
  * Calendar attendee information.
  */
 export interface CalendarAttendee {
@@ -181,6 +198,11 @@ export interface MedicalDocument {
 
   /** Video conference URL if present */
   calendarConferenceUrl?: string;
+
+  // === Override fields ===
+
+  /** Manual payment override set by user when OCR detection is incorrect */
+  paymentOverride?: PaymentOverride;
 
   /** Timestamp when this document was processed */
   processedAt: Date;

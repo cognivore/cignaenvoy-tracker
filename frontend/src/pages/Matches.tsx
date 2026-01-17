@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Check, X, FileText, ArrowRight, RefreshCw, AlertCircle, Sparkles, ExternalLink, Plus, Calendar, Mail, Users } from 'lucide-react';
 import { cn, formatCurrency, formatDate, getScoreClass } from '@/lib/utils';
+import { FilterTabs, type FilterTabItem, LoadingSpinner } from '@/components';
 import {
   api,
   getDocumentFileUrl,
@@ -124,6 +125,14 @@ export default function Matches() {
   const draftMatchCount = assignments.filter(a =>
     acceptedDraftDocumentIds.includes(a.documentId)
   ).length;
+
+  type MatchFilter = 'candidate' | 'confirmed' | 'rejected' | 'all';
+  const filterItems: FilterTabItem<MatchFilter>[] = useMemo(() => [
+    { key: 'candidate', label: 'Pending Review', count: counts.candidate, color: 'bg-bauhaus-yellow' },
+    { key: 'confirmed', label: 'Confirmed', count: counts.confirmed, color: 'bg-bauhaus-blue' },
+    { key: 'rejected', label: 'Rejected', count: counts.rejected, color: 'bg-bauhaus-red' },
+    { key: 'all', label: 'All', count: scopedAssignments.length, color: 'bg-bauhaus-gray' },
+  ], [counts, scopedAssignments.length]);
 
   async function handleCreateIllness() {
     if (!selectedPatientId || !newIllnessName) return;
@@ -277,45 +286,12 @@ export default function Matches() {
       </div>
 
       {/* Filter tabs */}
-      <div className="flex gap-2 mb-6">
-        <FilterTab
-          active={filter === 'candidate'}
-          onClick={() => setFilter('candidate')}
-          count={counts.candidate}
-          color="bg-bauhaus-yellow"
-        >
-          Pending Review
-        </FilterTab>
-        <FilterTab
-          active={filter === 'confirmed'}
-          onClick={() => setFilter('confirmed')}
-          count={counts.confirmed}
-          color="bg-bauhaus-blue"
-        >
-          Confirmed
-        </FilterTab>
-        <FilterTab
-          active={filter === 'rejected'}
-          onClick={() => setFilter('rejected')}
-          count={counts.rejected}
-          color="bg-bauhaus-red"
-        >
-          Rejected
-        </FilterTab>
-        <FilterTab
-          active={filter === 'all'}
-          onClick={() => setFilter('all')}
-          count={assignments.length}
-          color="bg-bauhaus-gray"
-        >
-          All
-        </FilterTab>
+      <div className="mb-6">
+        <FilterTabs items={filterItems} active={filter} onChange={setFilter} />
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center h-64">
-          <div className="w-8 h-8 border-4 border-bauhaus-blue border-t-transparent rounded-full animate-spin" />
-        </div>
+        <LoadingSpinner />
       ) : filteredAssignments.length === 0 ? (
         <EmptyState filter={filter} onRunMatching={handleRunMatching} isRunning={runningMatching} />
       ) : (
@@ -719,41 +695,6 @@ export default function Matches() {
         </div>
       )}
     </div>
-  );
-}
-
-function FilterTab({
-  active,
-  onClick,
-  count,
-  color,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  count: number;
-  color: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        'px-4 py-2 font-medium transition-colors flex items-center gap-2',
-        active
-          ? 'bg-bauhaus-black text-white'
-          : 'bg-white border-2 border-bauhaus-black hover:bg-bauhaus-lightgray'
-      )}
-    >
-      <span className={cn('w-2 h-2 rounded-full', color)} />
-      {children}
-      <span className={cn(
-        'text-xs px-1.5 py-0.5 rounded-full',
-        active ? 'bg-white text-bauhaus-black' : 'bg-bauhaus-lightgray'
-      )}>
-        {count}
-      </span>
-    </button>
   );
 }
 

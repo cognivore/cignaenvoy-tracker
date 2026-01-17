@@ -8,6 +8,7 @@ import type {
   MedicalDocument,
   CreateMedicalDocumentInput,
   DocumentClassification,
+  PaymentOverride,
 } from "../types/medical-document.js";
 import {
   createStorage,
@@ -15,6 +16,7 @@ import {
   generateId,
   dateReviver,
 } from "./base.js";
+import { hasPaymentSignal } from "../services/payment-signal.js";
 
 /**
  * Storage operations for medical documents.
@@ -51,6 +53,31 @@ export async function updateMedicalDocument(
   const updated: MedicalDocument = {
     ...existing,
     ...updates,
+  };
+  return documentsStorage.save(updated);
+}
+
+/**
+ * Set or clear the payment override for a document.
+ * Pass null to clear an existing override.
+ */
+export async function setPaymentOverride(
+  id: string,
+  override: Omit<PaymentOverride, "updatedAt"> | null
+): Promise<MedicalDocument | null> {
+  const existing = await documentsStorage.get(id);
+  if (!existing) return null;
+
+  // Clear override
+  if (!override) {
+    const { paymentOverride: _, ...rest } = existing;
+    return documentsStorage.save(rest as MedicalDocument);
+  }
+
+  // Set override
+  const updated: MedicalDocument = {
+    ...existing,
+    paymentOverride: { ...override, updatedAt: new Date() },
   };
   return documentsStorage.save(updated);
 }
@@ -176,7 +203,7 @@ export async function searchDocuments(
 export async function getMedicalBills(): Promise<MedicalDocument[]> {
   return documentsStorage.find(
     (d) =>
-      d.classification === "medical_bill" && d.detectedAmounts.length > 0
+      d.classification === "medical_bill" && hasPaymentSignal(d)
   );
 }
 
@@ -203,7 +230,7 @@ export async function getDocumentStats(): Promise<{
       byAccount[doc.account] = (byAccount[doc.account] ?? 0) + 1;
     }
 
-    if (doc.detectedAmounts.length > 0) {
+    if (hasPaymentSignal(doc)) {
       withAmounts++;
     }
   }

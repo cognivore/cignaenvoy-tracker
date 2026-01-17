@@ -2,9 +2,10 @@
  * Draft Claim Generator
  *
  * Builds draft claims from unattached payment-like attachment documents.
+ * Supports both detected amounts (OCR) and manual payment overrides.
  */
 
-import type { DetectedAmount, MedicalDocument } from "../types/medical-document.js";
+import type { MedicalDocument } from "../types/medical-document.js";
 import type {
   DraftClaim,
   DraftClaimPayment,
@@ -16,6 +17,10 @@ import {
   createDraftClaim,
   draftClaimsStorage,
 } from "../storage/draft-claims.js";
+import {
+  getPrimaryPaymentSignal,
+  hasPaymentSignal,
+} from "./payment-signal.js";
 
 /**
  * Determine if a document is within the requested date range.
@@ -37,31 +42,21 @@ function isWithinRange(
 }
 
 /**
- * Select the most reliable payment signal from detected amounts.
+ * Convert a payment signal into a draft claim payment snapshot.
  */
-function selectPrimaryPayment(
-  detectedAmounts: DetectedAmount[]
-): DraftClaimPayment | null {
-  if (detectedAmounts.length === 0) return null;
-
-  const best = detectedAmounts.reduce((current, candidate) => {
-    if (!current) return candidate;
-    if (candidate.confidence > current.confidence) return candidate;
-    if (
-      candidate.confidence === current.confidence &&
-      candidate.value > current.value
-    ) {
-      return candidate;
-    }
-    return current;
-  }, detectedAmounts[0]);
+function toDraftClaimPayment(document: MedicalDocument): DraftClaimPayment | null {
+  const signal = getPrimaryPaymentSignal(document);
+  if (!signal) return null;
 
   return {
-    amount: best.value,
-    currency: best.currency,
-    rawText: best.rawText,
-    context: best.context,
-    confidence: best.confidence,
+    amount: signal.amount,
+    currency: signal.currency,
+    rawText: signal.rawText,
+    context: signal.context,
+    confidence: signal.confidence,
+    source: signal.source,
+    overrideNote: signal.overrideNote,
+    overrideUpdatedAt: signal.overrideUpdatedAt,
   };
 }
 
@@ -86,10 +81,11 @@ export async function generateDraftClaims(
     existingDrafts.flatMap((draft) => draft.documentIds)
   );
 
+  // Filter candidates: attachments with a payment signal, not already assigned or drafted
   const candidates = documents.filter(
     (document) =>
       document.sourceType === "attachment" &&
-      document.detectedAmounts.length > 0 &&
+      hasPaymentSignal(document) &&
       !assignedDocumentIds.has(document.id) &&
       !draftDocumentIds.has(document.id) &&
       isWithinRange(document, range, now)
@@ -98,10 +94,8 @@ export async function generateDraftClaims(
   const createdDrafts: DraftClaim[] = [];
 
   for (const document of candidates) {
-    const payment = selectPrimaryPayment(document.detectedAmounts);
-    if (!payment) {
-      continue;
-    }
+    const payment = toDraftClaimPayment(document);
+    if (!payment) continue;
 
     const draft = await createDraftClaim({
       status: "pending",

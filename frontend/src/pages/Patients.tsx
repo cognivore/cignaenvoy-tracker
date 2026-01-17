@@ -1,21 +1,22 @@
 import { useState, useEffect } from 'react';
-import { 
-  User, 
-  Plus, 
-  RefreshCw, 
-  Calendar, 
-  Mail, 
+import {
+  User,
+  Plus,
+  RefreshCw,
+  Calendar,
+  Mail,
   Heart,
   ChevronRight,
   X,
   Edit
 } from 'lucide-react';
 import { cn, formatDate } from '@/lib/utils';
-import { 
-  api, 
-  type Patient, 
-  type Illness, 
-  type CreatePatientInput, 
+import { LoadingSpinner } from '@/components';
+import {
+  api,
+  type Patient,
+  type Illness,
+  type CreatePatientInput,
   type CreateIllnessInput
 } from '@/lib/api';
 
@@ -28,12 +29,12 @@ export default function Patients() {
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [patientIllnesses, setPatientIllnesses] = useState<Illness[]>([]);
   const [loadingIllnesses, setLoadingIllnesses] = useState(false);
-  
+
   // Forms
   const [showPatientForm, setShowPatientForm] = useState(false);
   const [showIllnessForm, setShowIllnessForm] = useState(false);
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
-  
+
   // Selected illness for detail view
   const [selectedIllness, setSelectedIllness] = useState<Illness | null>(null);
 
@@ -148,9 +149,7 @@ export default function Patients() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center h-64">
-          <div className="w-8 h-8 border-4 border-bauhaus-blue border-t-transparent rounded-full animate-spin" />
-        </div>
+        <LoadingSpinner />
       ) : patients.length === 0 ? (
         <EmptyState onAdd={() => setShowPatientForm(true)} />
       ) : (
@@ -217,7 +216,7 @@ export default function Patients() {
                     <Edit size={18} />
                   </button>
                 </div>
-                
+
                 <div className="grid grid-cols-2 gap-4 mb-6">
                   <DetailRow label="Cigna ID" value={selectedPatient.cignaId} />
                   <DetailRow label="Relationship" value={selectedPatient.relationship} />
@@ -265,8 +264,8 @@ export default function Patients() {
                           onClick={() => setSelectedIllness(illness)}
                           className={cn(
                             'p-3 border-2 cursor-pointer transition-all flex items-center justify-between',
-                            selectedIllness?.id === illness.id 
-                              ? 'border-bauhaus-blue bg-bauhaus-blue/5' 
+                            selectedIllness?.id === illness.id
+                              ? 'border-bauhaus-blue bg-bauhaus-blue/5'
                               : 'border-bauhaus-lightgray hover:border-bauhaus-gray'
                           )}
                         >
@@ -301,9 +300,9 @@ export default function Patients() {
 
               {/* Selected illness detail */}
               {selectedIllness && (
-                <IllnessDetail 
-                  illness={selectedIllness} 
-                  onClose={() => setSelectedIllness(null)} 
+                <IllnessDetail
+                  illness={selectedIllness}
+                  onClose={() => setSelectedIllness(null)}
                 />
               )}
             </div>
@@ -315,7 +314,7 @@ export default function Patients() {
       {(showPatientForm || editingPatient) && (
         <PatientFormModal
           patient={editingPatient}
-          onSave={editingPatient 
+          onSave={editingPatient
             ? (data) => handleUpdatePatient(editingPatient.id, data)
             : handleCreatePatient
           }
@@ -406,7 +405,7 @@ function IllnessDetail({ illness, onClose }: { illness: Illness; onClose: () => 
           <Mail size={16} />
           Relevant Accounts ({illness.relevantAccounts.length})
         </h4>
-        
+
         {illness.relevantAccounts.length === 0 ? (
           <p className="text-sm text-bauhaus-gray">
             No accounts linked yet. Accounts are added when confirming document matches.
@@ -414,8 +413,8 @@ function IllnessDetail({ illness, onClose }: { illness: Illness; onClose: () => 
         ) : (
           <div className="space-y-2">
             {illness.relevantAccounts.map((account, idx) => (
-              <div 
-                key={idx} 
+              <div
+                key={idx}
                 className="p-3 bg-bauhaus-lightgray/30 border border-bauhaus-lightgray flex items-center justify-between"
               >
                 <div>
@@ -454,7 +453,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       <p className="text-bauhaus-gray mb-6">
         Add patient personas to track their claims and conditions
       </p>
-      <button 
+      <button
         onClick={onAdd}
         className="px-6 py-3 bg-bauhaus-blue text-white font-medium hover:bg-bauhaus-blue/90 transition-colors"
       >
@@ -464,11 +463,11 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
   );
 }
 
-function PatientFormModal({ 
-  patient, 
-  onSave, 
-  onClose 
-}: { 
+function PatientFormModal({
+  patient,
+  onSave,
+  onClose
+}: {
   patient?: Patient | null;
   onSave: (data: CreatePatientInput) => void;
   onClose: () => void;
@@ -601,12 +600,12 @@ function PatientFormModal({
   );
 }
 
-function IllnessFormModal({ 
+function IllnessFormModal({
   patientId,
   patientName,
-  onSave, 
-  onClose 
-}: { 
+  onSave,
+  onClose
+}: {
   patientId: string;
   patientName: string;
   onSave: (data: CreateIllnessInput) => void;

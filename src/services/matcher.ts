@@ -6,7 +6,7 @@
  */
 
 import type { ScrapedClaim } from "../types/scraped-claim.js";
-import type { MedicalDocument, DetectedAmount } from "../types/medical-document.js";
+import type { MedicalDocument } from "../types/medical-document.js";
 import type {
   DocumentClaimAssignment,
   CreateAssignmentInput,
@@ -14,13 +14,18 @@ import type {
 } from "../types/assignment.js";
 import { MATCH_THRESHOLDS } from "../types/assignment.js";
 import { claimsStorage } from "../storage/claims.js";
-import { documentsStorage, getMedicalBills } from "../storage/documents.js";
+import { documentsStorage } from "../storage/documents.js";
 import {
   createAssignment,
   getAssignmentByPair,
   clearCandidatesForDocument,
 } from "../storage/assignments.js";
 import { ensureStorageDirs } from "../storage/index.js";
+import {
+  getPaymentSignals,
+  hasPaymentSignal,
+  type PaymentSignal,
+} from "./payment-signal.js";
 
 /**
  * Match result from comparing a document to a claim.
@@ -90,16 +95,16 @@ function daysBetween(date1: Date, date2: Date): number {
  * Find the best matching amount from document for a claim.
  */
 function findBestAmountMatch(
-  detectedAmounts: DetectedAmount[],
+  signals: PaymentSignal[],
   claimAmount: number,
   claimCurrency: string
-): DetectedAmount | null {
-  let bestMatch: DetectedAmount | null = null;
+): PaymentSignal | null {
+  let bestMatch: PaymentSignal | null = null;
   let bestDiff = Infinity;
 
-  for (const amount of detectedAmounts) {
+  for (const amount of signals) {
     const { differencePercent } = compareAmounts(
-      amount.value,
+      amount.amount,
       amount.currency,
       claimAmount,
       claimCurrency
@@ -128,26 +133,24 @@ function calculateMatchScore(
   const isCalendarEvent = document.sourceType === "calendar";
 
   // Find best amount match (skip for calendar events)
+  const paymentSignals = isCalendarEvent ? [] : getPaymentSignals(document);
+
   const bestAmount = isCalendarEvent
     ? null
-    : findBestAmountMatch(
-      document.detectedAmounts,
-      claim.claimAmount,
-      claim.claimCurrency
-    );
+    : findBestAmountMatch(paymentSignals, claim.claimAmount, claim.claimCurrency);
 
   let amountMatchDetails: MatchResult["amountMatchDetails"];
 
   if (bestAmount) {
     const { difference, differencePercent } = compareAmounts(
-      bestAmount.value,
+      bestAmount.amount,
       bestAmount.currency,
       claim.claimAmount,
       claim.claimCurrency
     );
 
     amountMatchDetails = {
-      documentAmount: bestAmount.value,
+      documentAmount: bestAmount.amount,
       documentCurrency: bestAmount.currency,
       claimAmount: claim.claimAmount,
       claimCurrency: claim.claimCurrency,
@@ -155,18 +158,21 @@ function calculateMatchScore(
       differencePercent,
     };
 
+    const amountPrefix =
+      bestAmount.source === "override" ? "Override amount match" : "Exact amount match";
+
     if (differencePercent <= MATCH_THRESHOLDS.EXACT_AMOUNT_TOLERANCE) {
       reasons.push({
         type: "exact_amount",
         score: MATCH_THRESHOLDS.EXACT_AMOUNT_SCORE,
-        description: `Exact amount match: ${bestAmount.currency} ${bestAmount.value.toFixed(2)} matches claim ${claim.claimCurrency} ${claim.claimAmount.toFixed(2)}`,
+        description: `${amountPrefix}: ${bestAmount.currency} ${bestAmount.amount.toFixed(2)} matches claim ${claim.claimCurrency} ${claim.claimAmount.toFixed(2)}`,
       });
       totalScore += MATCH_THRESHOLDS.EXACT_AMOUNT_SCORE;
     } else if (differencePercent <= MATCH_THRESHOLDS.APPROXIMATE_AMOUNT_TOLERANCE) {
       reasons.push({
         type: "approximate_amount",
         score: MATCH_THRESHOLDS.APPROXIMATE_AMOUNT_SCORE,
-        description: `Approximate amount match: ${bestAmount.currency} ${bestAmount.value.toFixed(2)} ≈ claim ${claim.claimCurrency} ${claim.claimAmount.toFixed(2)} (${(differencePercent * 100).toFixed(1)}% diff)`,
+        description: `Approximate amount match: ${bestAmount.currency} ${bestAmount.amount.toFixed(2)} ≈ claim ${claim.claimCurrency} ${claim.claimAmount.toFixed(2)} (${(differencePercent * 100).toFixed(1)}% diff)`,
       });
       totalScore += MATCH_THRESHOLDS.APPROXIMATE_AMOUNT_SCORE;
     }
@@ -174,14 +180,14 @@ function calculateMatchScore(
     // Also check against line items
     for (const lineItem of claim.lineItems) {
       const lineMatch = findBestAmountMatch(
-        document.detectedAmounts,
+        paymentSignals,
         lineItem.claimAmount,
         lineItem.claimCurrency
       );
 
       if (lineMatch) {
         const lineDiff = compareAmounts(
-          lineMatch.value,
+          lineMatch.amount,
           lineMatch.currency,
           lineItem.claimAmount,
           lineItem.claimCurrency
@@ -191,7 +197,7 @@ function calculateMatchScore(
           reasons.push({
             type: "exact_amount",
             score: MATCH_THRESHOLDS.EXACT_AMOUNT_SCORE * 0.5, // Line item match worth less
-            description: `Line item match: ${lineMatch.currency} ${lineMatch.value.toFixed(2)} matches "${lineItem.treatmentDescription}"`,
+            description: `Line item match: ${lineMatch.currency} ${lineMatch.amount.toFixed(2)} matches "${lineItem.treatmentDescription}"`,
           });
           totalScore += MATCH_THRESHOLDS.EXACT_AMOUNT_SCORE * 0.5;
           break; // Only count once
@@ -368,7 +374,7 @@ export class Matcher {
     const isCalendarEvent = document.sourceType === "calendar";
     const hasDate = document.date || document.calendarStart;
 
-    if (document.detectedAmounts.length === 0 && !(isCalendarEvent && hasDate)) {
+    if (!hasPaymentSignal(document) && !(isCalendarEvent && hasDate)) {
       return assignments;
     }
 
@@ -437,7 +443,7 @@ export class Matcher {
     // - Calendar events (appointments) with dates
     const matchableDocuments = allDocuments.filter(
       (d) =>
-        (d.classification === "medical_bill" && d.detectedAmounts.length > 0) ||
+        (d.classification === "medical_bill" && hasPaymentSignal(d)) ||
         (d.sourceType === "calendar" && (d.date || d.calendarStart))
     );
 
@@ -525,9 +531,7 @@ export class Matcher {
   }> {
     const documents = await documentsStorage.getAll();
     const claims = await claimsStorage.getAll();
-    const documentsWithAmounts = documents.filter(
-      (d) => d.detectedAmounts.length > 0
-    ).length;
+    const documentsWithAmounts = documents.filter((d) => hasPaymentSignal(d)).length;
 
     // Run matching to get stats (won't create duplicates)
     const matches = await this.matchAllDocuments();

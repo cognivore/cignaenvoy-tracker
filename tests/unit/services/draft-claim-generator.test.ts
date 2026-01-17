@@ -130,4 +130,82 @@ describe("Draft claim generator", () => {
     expect(created).toHaveLength(1);
     expect(created[0]?.primaryDocumentId).toBe(recentDoc.id);
   });
+
+  it("prefers payment override over detected amounts", async () => {
+    const { documents, generator } = await loadModules();
+
+    const doc = await documents.createMedicalDocument({
+      sourceType: "attachment",
+      detectedAmounts: [createAmount(8000)], // OCR misread 80 as 8000
+      classification: "medical_bill",
+      medicalKeywords: [],
+      date: new Date("2026-01-10"),
+    });
+
+    // Set the correct override
+    await documents.setPaymentOverride(doc.id, { amount: 80, currency: "EUR", note: "OCR misread" });
+
+    const created = await generator.generateDraftClaims("forever", new Date("2026-01-16"));
+
+    expect(created).toHaveLength(1);
+    const draft = created[0]!;
+    expect(draft.payment.amount).toBe(80);
+    expect(draft.payment.currency).toBe("EUR");
+    expect(draft.payment.source).toBe("override");
+    expect(draft.payment.confidence).toBe(100); // Manual override is 100% confidence
+  });
+
+  it("creates draft claim from override-only document (no detected amounts)", async () => {
+    const { documents, generator } = await loadModules();
+
+    const doc = await documents.createMedicalDocument({
+      sourceType: "attachment",
+      detectedAmounts: [], // No detected amounts at all
+      classification: "medical_bill",
+      medicalKeywords: [],
+      date: new Date("2026-01-10"),
+    });
+
+    // Add override to make it draftable
+    await documents.setPaymentOverride(doc.id, { amount: 150, currency: "USD" });
+
+    const created = await generator.generateDraftClaims("forever", new Date("2026-01-16"));
+
+    expect(created).toHaveLength(1);
+    expect(created[0]?.payment.amount).toBe(150);
+    expect(created[0]?.payment.source).toBe("override");
+  });
+
+  it("does not create drafts for documents without any payment signal", async () => {
+    const { documents, generator } = await loadModules();
+
+    await documents.createMedicalDocument({
+      sourceType: "attachment",
+      detectedAmounts: [],
+      classification: "correspondence",
+      medicalKeywords: [],
+      date: new Date("2026-01-10"),
+    });
+
+    const created = await generator.generateDraftClaims("forever", new Date("2026-01-16"));
+
+    expect(created).toHaveLength(0);
+  });
+
+  it("marks detected amounts with source = detected", async () => {
+    const { documents, generator } = await loadModules();
+
+    await documents.createMedicalDocument({
+      sourceType: "attachment",
+      detectedAmounts: [createAmount(250)],
+      classification: "medical_bill",
+      medicalKeywords: [],
+      date: new Date("2026-01-10"),
+    });
+
+    const created = await generator.generateDraftClaims("forever", new Date("2026-01-16"));
+
+    expect(created).toHaveLength(1);
+    expect(created[0]?.payment.source).toBe("detected");
+  });
 });

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Calendar, DollarSign, User, FileText, RefreshCw } from 'lucide-react';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
+import { DetailRow, EmptyState, LoadingSpinner } from '@/components';
 import { api, type ScrapedClaim } from '@/lib/api';
 
 export default function Claims() {
@@ -44,11 +45,14 @@ export default function Claims() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center h-64">
-          <div className="w-8 h-8 border-4 border-bauhaus-blue border-t-transparent rounded-full animate-spin" />
-        </div>
+        <LoadingSpinner />
       ) : claims.length === 0 ? (
-        <EmptyState />
+        <EmptyState
+          icon={FileText}
+          title="No Claims Yet"
+          message="Scrape claims from Cigna Envoy to get started"
+          action={{ label: 'Scrape Claims', onClick: () => {} }}
+        />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Claims list */}
@@ -63,17 +67,15 @@ export default function Claims() {
                 )}
               >
                 <div className="flex items-start justify-between mb-4">
-                  <div>
-                    <span className={cn(
+                  <span
+                    className={cn(
                       'inline-block px-2 py-1 text-xs font-medium uppercase',
                       statusColors[claim.status]
-                    )}>
-                      {claim.status}
-                    </span>
-                  </div>
-                  <p className="text-sm text-bauhaus-gray">
-                    #{claim.cignaClaimNumber}
-                  </p>
+                    )}
+                  >
+                    {claim.status}
+                  </span>
+                  <p className="text-sm text-bauhaus-gray">#{claim.cignaClaimNumber}</p>
                 </div>
 
                 <div className="space-y-3">
@@ -104,11 +106,9 @@ export default function Claims() {
           {/* Claim detail */}
           {selectedClaim && (
             <div className="bauhaus-card h-fit sticky top-8">
-              <h2 className="text-xl font-bold mb-4">
-                Claim #{selectedClaim.cignaClaimNumber}
-              </h2>
+              <h2 className="text-xl font-bold mb-4">Claim #{selectedClaim.cignaClaimNumber}</h2>
 
-              <div className="space-y-4 mb-6">
+              <div className="space-y-1 mb-6">
                 <DetailRow label="Submission #" value={selectedClaim.submissionNumber} />
                 <DetailRow label="Member" value={selectedClaim.memberName} />
                 <DetailRow label="Treatment Date" value={formatDate(selectedClaim.treatmentDate)} />
@@ -120,7 +120,10 @@ export default function Claims() {
                 {selectedClaim.amountPaid && (
                   <DetailRow
                     label="Amount Paid"
-                    value={formatCurrency(selectedClaim.amountPaid, selectedClaim.paymentCurrency || selectedClaim.claimCurrency)}
+                    value={formatCurrency(
+                      selectedClaim.amountPaid,
+                      selectedClaim.paymentCurrency || selectedClaim.claimCurrency
+                    )}
                   />
                 )}
               </div>
@@ -150,32 +153,6 @@ export default function Claims() {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between items-center py-2 border-b border-bauhaus-lightgray">
-      <span className="text-sm text-bauhaus-gray">{label}</span>
-      <span className="font-medium">{value}</span>
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="bauhaus-card text-center py-16">
-      <div className="w-16 h-16 bg-bauhaus-lightgray rounded-full mx-auto mb-4 flex items-center justify-center">
-        <FileText size={32} className="text-bauhaus-gray" />
-      </div>
-      <h2 className="text-xl font-bold mb-2">No Claims Yet</h2>
-      <p className="text-bauhaus-gray mb-6">
-        Scrape claims from Cigna Envoy to get started
-      </p>
-      <button className="px-6 py-3 bg-bauhaus-blue text-white font-medium hover:bg-bauhaus-blue/90 transition-colors">
-        Scrape Claims
-      </button>
     </div>
   );
 }

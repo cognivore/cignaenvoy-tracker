@@ -67,6 +67,13 @@ export interface DetectedAmount {
   confidence: number;
 }
 
+export interface PaymentOverride {
+  amount: number;
+  currency: string;
+  note?: string;
+  updatedAt: string;
+}
+
 export interface CalendarAttendee {
   email: string;
   name?: string;
@@ -110,6 +117,8 @@ export interface MedicalDocument {
   calendarAttendees?: CalendarAttendee[];
   calendarOrganizer?: CalendarOrganizer;
   calendarConferenceUrl?: string;
+  // Override fields
+  paymentOverride?: PaymentOverride;
   processedAt: string;
 }
 
@@ -117,12 +126,17 @@ export type DraftClaimStatus = "pending" | "accepted" | "rejected";
 export type DraftClaimDateSource = "calendar" | "manual" | "document";
 export type DraftClaimRange = "forever" | "last_month" | "last_week";
 
+export type DraftClaimPaymentSource = "detected" | "override";
+
 export interface DraftClaimPayment {
   amount: number;
   currency: string;
   rawText?: string;
   context?: string;
   confidence?: number;
+  source?: DraftClaimPaymentSource;
+  overrideNote?: string;
+  overrideUpdatedAt?: string;
 }
 
 export interface DraftClaim {
@@ -260,6 +274,15 @@ export const api = {
   getDocuments: () => fetchJson<MedicalDocument[]>("/documents"),
   getDocument: (id: string) => fetchJson<MedicalDocument>(`/documents/${id}`),
   getMedicalBills: () => fetchJson<MedicalDocument[]>("/documents/medical-bills"),
+
+  setPaymentOverride: (
+    id: string,
+    override: { amount: number; currency: string; note?: string } | null
+  ) =>
+    fetchJson<MedicalDocument>(`/documents/${id}/payment-override`, {
+      method: "PUT",
+      body: JSON.stringify(override ? override : { clear: true }),
+    }),
 
   // Patients
   getPatients: () => fetchJson<Patient[]>("/patients"),

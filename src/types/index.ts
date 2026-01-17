@@ -82,6 +82,7 @@ export type {
   DocumentSourceType,
   DocumentClassification,
   DetectedAmount,
+  PaymentOverride,
   CalendarAttendee,
   CalendarOrganizer,
   CreateMedicalDocumentInput,
@@ -98,6 +99,7 @@ export type {
   DraftClaimStatus,
   DraftClaimRange,
   DraftClaimDateSource,
+  DraftClaimPaymentSource,
   DraftClaimPayment,
   CreateDraftClaimInput,
   UpdateDraftClaimInput,
@@ -106,6 +108,7 @@ export {
   DRAFT_CLAIM_STATUSES,
   DRAFT_CLAIM_RANGES,
   DRAFT_CLAIM_DATE_SOURCES,
+  DRAFT_CLAIM_PAYMENT_SOURCES,
 } from "./draft-claim.js";
 
 // Document-claim assignment types

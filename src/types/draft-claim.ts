@@ -40,10 +40,21 @@ export const DRAFT_CLAIM_DATE_SOURCES: readonly DraftClaimDateSource[] = [
 ] as const;
 
 /**
+ * Source of the payment amount for a draft claim.
+ */
+export type DraftClaimPaymentSource = "detected" | "override";
+
+/** All payment sources for iteration */
+export const DRAFT_CLAIM_PAYMENT_SOURCES: readonly DraftClaimPaymentSource[] = [
+  "detected",
+  "override",
+] as const;
+
+/**
  * Primary payment signal for a draft claim.
  */
 export interface DraftClaimPayment {
-  /** Amount detected */
+  /** Amount detected or overridden */
   amount: number;
 
   /** Currency code (e.g., "EUR", "USD") */
@@ -57,6 +68,15 @@ export interface DraftClaimPayment {
 
   /** Confidence score 0-100 */
   confidence?: number;
+
+  /** Source of the payment signal */
+  source?: DraftClaimPaymentSource;
+
+  /** Override note (if payment came from manual override) */
+  overrideNote?: string;
+
+  /** Override update timestamp (if payment came from manual override) */
+  overrideUpdatedAt?: Date;
 }
 
 /**
