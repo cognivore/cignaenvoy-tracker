@@ -108,9 +108,18 @@ export default function Documents() {
   }
 
   const filteredDocs = useMemo(() => {
-    if (filter === 'all') return documents;
-    if (filter === 'calendar') return documents.filter(d => d.sourceType === 'calendar');
-    return documents.filter(d => d.classification === filter);
+    const base = filter === 'all'
+      ? documents
+      : filter === 'calendar'
+        ? documents.filter(d => d.sourceType === 'calendar')
+        : documents.filter(d => d.classification === filter);
+
+    // Sort by date descending (most recent first)
+    return [...base].sort((a, b) => {
+      const dateA = new Date(a.date ?? a.processedAt).getTime();
+      const dateB = new Date(b.date ?? b.processedAt).getTime();
+      return dateB - dateA;
+    });
   }, [documents, filter]);
 
   const classificationCounts = useMemo(() =>

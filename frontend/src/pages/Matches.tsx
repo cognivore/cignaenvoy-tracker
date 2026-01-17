@@ -112,9 +112,16 @@ export default function Matches() {
     ? assignments.filter(a => acceptedDraftDocumentIds.includes(a.documentId))
     : assignments;
 
-  const filteredAssignments = filter === 'all'
-    ? scopedAssignments
-    : scopedAssignments.filter(a => a.status === filter);
+  const filteredAssignments = useMemo(() => {
+    const base = filter === 'all'
+      ? scopedAssignments
+      : scopedAssignments.filter(a => a.status === filter);
+    // Sort by matchScore descending, then by createdAt descending
+    return [...base].sort((a, b) => {
+      if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }, [scopedAssignments, filter]);
 
   const counts = {
     candidate: scopedAssignments.filter(a => a.status === 'candidate').length,

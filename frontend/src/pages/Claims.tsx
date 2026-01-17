@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Calendar, DollarSign, User, FileText, RefreshCw } from 'lucide-react';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import { DetailRow, EmptyState, LoadingSpinner } from '@/components';
@@ -31,6 +31,14 @@ export default function Claims() {
     rejected: 'bg-bauhaus-red text-white',
   };
 
+  // Sort claims by treatment date descending (most recent first)
+  const sortedClaims = useMemo(() =>
+    [...claims].sort((a, b) =>
+      new Date(b.treatmentDate).getTime() - new Date(a.treatmentDate).getTime()
+    ),
+    [claims]
+  );
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
@@ -46,7 +54,7 @@ export default function Claims() {
 
       {loading ? (
         <LoadingSpinner />
-      ) : claims.length === 0 ? (
+      ) : sortedClaims.length === 0 ? (
         <EmptyState
           icon={FileText}
           title="No Claims Yet"
@@ -57,7 +65,7 @@ export default function Claims() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Claims list */}
           <div className="space-y-4">
-            {claims.map((claim) => (
+            {sortedClaims.map((claim) => (
               <div
                 key={claim.id}
                 onClick={() => setSelectedClaim(claim)}

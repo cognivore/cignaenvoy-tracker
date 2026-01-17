@@ -96,8 +96,13 @@ export default function DraftClaims() {
     [documents]
   );
 
-  const filteredDrafts =
-    filter === 'all' ? drafts : drafts.filter((draft) => draft.status === filter);
+  const filteredDrafts = useMemo(() => {
+    const base = filter === 'all' ? drafts : drafts.filter((draft) => draft.status === filter);
+    // Sort by generatedAt descending (most recent first)
+    return [...base].sort((a, b) =>
+      new Date(b.generatedAt).getTime() - new Date(a.generatedAt).getTime()
+    );
+  }, [drafts, filter]);
 
   const counts = {
     pending: drafts.filter((draft) => draft.status === 'pending').length,
