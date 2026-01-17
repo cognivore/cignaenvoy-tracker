@@ -49,6 +49,12 @@ export interface DocumentClaimAssignment {
   /** Reference to the scraped claim */
   claimId: string;
 
+  /**
+   * Reference to the illness this evidence supports.
+   * Required when confirming an assignment.
+   */
+  illnessId?: string;
+
   /** Match confidence score (0-100) */
   matchScore: number;
 
@@ -122,6 +128,15 @@ export const MATCH_THRESHOLDS = {
 
   /** Days proximity for date match bonus */
   DATE_PROXIMITY_DAYS: 30,
+
+  /** Days beyond which date mismatch penalty applies */
+  DATE_MISMATCH_PENALTY_THRESHOLD: 60,
+
+  /** Days beyond which no match is possible (hard cutoff) */
+  MAX_DATE_MISMATCH_DAYS: 90,
+
+  /** Points deducted for date mismatch beyond threshold */
+  DATE_MISMATCH_PENALTY: 40,
 
   /** Minimum score to be considered a candidate */
   MINIMUM_CANDIDATE_SCORE: 50,

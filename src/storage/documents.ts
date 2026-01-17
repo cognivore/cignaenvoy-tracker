@@ -78,6 +78,18 @@ export async function findDocumentByAttachmentPath(
 }
 
 /**
+ * Find document by calendar event ID.
+ */
+export async function findDocumentByCalendarEventId(
+  calendarEventId: string
+): Promise<MedicalDocument | null> {
+  const docs = await documentsStorage.find(
+    (d) => d.calendarEventId === calendarEventId
+  );
+  return docs[0] ?? null;
+}
+
+/**
  * Get documents by classification.
  */
 export async function getDocumentsByClassification(

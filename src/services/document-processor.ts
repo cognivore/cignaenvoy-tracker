@@ -1,7 +1,7 @@
 /**
  * Document Processor Service
  *
- * Processes email/attachment dumps using QweN OCR API
+ * Processes email/attachment/calendar dumps using QweN OCR API
  * to extract and classify medical documents.
  */
 
@@ -14,18 +14,21 @@ import {
   type EmailSearchResult,
   type EmailAttachment,
   type EmailFTSSearchResponse,
+  type CalendarEventSearchResult,
 } from "./qwen-client.js";
 import type {
   MedicalDocument,
   CreateMedicalDocumentInput,
   DocumentClassification,
   DetectedAmount,
+  CalendarAttendee,
 } from "../types/medical-document.js";
 import { MEDICAL_KEYWORDS } from "../types/medical-document.js";
 import {
   createMedicalDocument,
   findDocumentByEmailId,
   findDocumentByAttachmentPath,
+  findDocumentByCalendarEventId,
 } from "../storage/documents.js";
 import { ensureStorageDirs } from "../storage/index.js";
 
@@ -121,8 +124,14 @@ function extractAmounts(text: string): DetectedAmount[] {
  */
 function classifyDocument(
   text: string,
-  subject?: string
+  subject?: string,
+  isCalendarEvent: boolean = false
 ): DocumentClassification {
+  // Calendar events are appointments by default
+  if (isCalendarEvent) {
+    return "appointment";
+  }
+
   const combined = `${subject ?? ""} ${text}`.toLowerCase();
 
   // Check for specific document types
@@ -196,10 +205,22 @@ function classifyDocument(
       score: 0,
     },
     {
+      type: "appointment",
+      keywords: [
+        "appointment",
+        "termin",
+        "rendez-vous",
+        "session",
+        "visit",
+        "consultation",
+        "meeting with doctor",
+      ],
+      score: 0,
+    },
+    {
       type: "correspondence",
       keywords: [
         "dear",
-        "appointment",
         "confirmation",
         "reminder",
         "follow-up",
@@ -257,10 +278,16 @@ export interface ProcessorConfig {
   accounts?: string[];
   /** Search queries for finding medical emails */
   searchQueries?: string[];
+  /** Search queries for finding medical calendar events */
+  calendarQueries?: string[];
   /** Maximum emails to process per query */
   maxEmailsPerQuery?: number;
+  /** Maximum calendar events to process per query */
+  maxCalendarEventsPerQuery?: number;
   /** Skip emails already processed */
   skipExisting?: boolean;
+  /** Process calendar events (default: true) */
+  processCalendar?: boolean;
 }
 
 const DEFAULT_SEARCH_QUERIES = [
@@ -278,6 +305,24 @@ const DEFAULT_SEARCH_QUERIES = [
   "optometrist",
 ];
 
+const DEFAULT_CALENDAR_QUERIES = [
+  "doctor",
+  "therapy",
+  "psychotherapy",
+  "psychiatrist",
+  "psychologist",
+  "dentist",
+  "optometrist",
+  "hospital",
+  "clinic",
+  "medical",
+  "appointment",
+  "consultation",
+  "treatment",
+  "checkup",
+  "physiotherapy",
+];
+
 /**
  * Document processor service.
  */
@@ -289,8 +334,11 @@ export class DocumentProcessor {
     this.client = config.client ?? qwenClient;
     this.config = {
       searchQueries: config.searchQueries ?? DEFAULT_SEARCH_QUERIES,
-      maxEmailsPerQuery: config.maxEmailsPerQuery ?? 20,
+      calendarQueries: config.calendarQueries ?? DEFAULT_CALENDAR_QUERIES,
+      maxEmailsPerQuery: config.maxEmailsPerQuery ?? 1000,
+      maxCalendarEventsPerQuery: config.maxCalendarEventsPerQuery ?? 1000,
       skipExisting: config.skipExisting ?? true,
+      processCalendar: config.processCalendar ?? true,
       ...config,
     };
 
@@ -572,17 +620,155 @@ export class DocumentProcessor {
   }
 
   /**
+   * Process a single calendar event.
+   */
+  async processCalendarEvent(
+    event: CalendarEventSearchResult
+  ): Promise<MedicalDocument | null> {
+    // Build searchable text from event
+    const eventText = [
+      event.summary,
+      event.description,
+      event.location,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    // Check if event appears medical-related
+    if (!isMedicalRelated(eventText)) {
+      return null;
+    }
+
+    // Check if already processed
+    if (this.config.skipExisting) {
+      const existing = await findDocumentByCalendarEventId(event.id);
+      if (existing) {
+        return existing;
+      }
+    }
+
+    // Convert attendees to our format (filter undefined values)
+    const calendarAttendees: CalendarAttendee[] | undefined = event.attendees?.map(
+      (a): CalendarAttendee => ({
+        email: a.email,
+        ...(a.name && { name: a.name }),
+        ...(a.response && { response: a.response }),
+        ...(a.organizer !== undefined && { organizer: a.organizer }),
+      })
+    );
+
+    // Create document for calendar event
+    // Use spread to conditionally include optional properties
+    const docInput: CreateMedicalDocumentInput = {
+      sourceType: "calendar",
+      account: event.account,
+      date: new Date(event.start),
+      // Calendar-specific fields
+      calendarEventId: event.id,
+      calendarId: event.calendar_id,
+      calendarSummary: event.summary,
+      ...(event.description && { calendarDescription: event.description }),
+      ...(event.location && { calendarLocation: event.location }),
+      calendarStart: new Date(event.start),
+      calendarEnd: new Date(event.end),
+      calendarAllDay: event.all_day,
+      ...(calendarAttendees && { calendarAttendees }),
+      ...(event.organizer && {
+        calendarOrganizer: {
+          ...(event.organizer.email && { email: event.organizer.email }),
+          ...(event.organizer.display_name && { displayName: event.organizer.display_name }),
+        },
+      }),
+      ...(event.conference?.video_url && { calendarConferenceUrl: event.conference.video_url }),
+      // Use event text as searchable content
+      ocrText: eventText,
+      ocrCharCount: eventText.length,
+      // Calendar events typically don't have amounts
+      detectedAmounts: extractAmounts(eventText),
+      classification: classifyDocument(eventText, event.summary, true),
+      medicalKeywords: extractMedicalKeywords(eventText),
+      // Use summary as subject for consistency
+      subject: event.summary,
+    };
+
+    return createMedicalDocument(docInput);
+  }
+
+  /**
+   * Search for and process medical-related calendar events.
+   *
+   * Uses the BM25 FTS endpoint (searchCalendarFTS) which returns complete event
+   * entities ranked by relevance.
+   */
+  async processCalendarEventsFromSearch(): Promise<MedicalDocument[]> {
+    const allDocuments: MedicalDocument[] = [];
+    const processedEventIds = new Set<string>();
+
+    for (const query of this.config.calendarQueries ?? []) {
+      try {
+        const searchResult = await this.client.searchCalendarFTS(query, {
+          ...(this.config.accounts?.[0] && { account: this.config.accounts[0] }),
+          limit: this.config.maxCalendarEventsPerQuery,
+        });
+
+        if (searchResult.status !== "success" || !searchResult.results) {
+          console.warn(
+            `Calendar search failed for query "${query}":`,
+            searchResult.error
+          );
+          continue;
+        }
+
+        console.log(
+          `[Calendar FTS] Query "${query}": ${searchResult.count ?? 0} results ` +
+            `(${searchResult.total_matches ?? 0} total matches)`
+        );
+
+        for (const event of searchResult.results) {
+          // Skip already processed in this run
+          if (processedEventIds.has(event.id)) {
+            continue;
+          }
+          processedEventIds.add(event.id);
+
+          try {
+            const doc = await this.processCalendarEvent(event);
+            if (doc) {
+              allDocuments.push(doc);
+            }
+          } catch (err) {
+            console.error(`Failed to process calendar event ${event.id}:`, err);
+          }
+        }
+      } catch (err) {
+        console.error(`Calendar search failed for query "${query}":`, err);
+      }
+    }
+
+    return allDocuments;
+  }
+
+  /**
    * Run the full document processing workflow.
    */
   async run(): Promise<MedicalDocument[]> {
     console.log("Starting document processing...");
 
     // Process emails from search
-    const docs = await this.processEmailsFromSearch();
+    const emailDocs = await this.processEmailsFromSearch();
+    console.log(`Processed ${emailDocs.length} email/attachment documents`);
 
-    console.log(`Processed ${docs.length} medical documents`);
+    // Process calendar events if enabled
+    let calendarDocs: MedicalDocument[] = [];
+    if (this.config.processCalendar) {
+      calendarDocs = await this.processCalendarEventsFromSearch();
+      console.log(`Processed ${calendarDocs.length} calendar documents`);
+    }
 
-    return docs;
+    const allDocs = [...emailDocs, ...calendarDocs];
+    console.log(`Total: ${allDocs.length} medical documents processed`);
+
+    return allDocs;
   }
 }
 

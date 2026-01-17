@@ -18,6 +18,9 @@ export const STORAGE_DIRS = {
   claims: path.join(DATA_DIR, "claims"),
   documents: path.join(DATA_DIR, "documents"),
   assignments: path.join(DATA_DIR, "assignments"),
+  patients: path.join(DATA_DIR, "patients"),
+  illnesses: path.join(DATA_DIR, "illnesses"),
+  draftClaims: path.join(DATA_DIR, "draft-claims"),
 } as const;
 
 /**

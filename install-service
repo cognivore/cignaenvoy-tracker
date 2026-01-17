@@ -1,0 +1,596 @@
+#!/usr/bin/env bash
+# Install Cigna Envoy Tracker as macOS LaunchAgent services
+# Also sets up shared Caddy reverse proxy for *.localhost domains
+# Usage: ./install-service [install|uninstall|status|logs|restart]
+
+set -euo pipefail
+
+SERVICE_BACKEND="com.cigna.tracker.backend"
+SERVICE_FRONTEND="com.cigna.tracker.frontend"
+SERVICE_CADDY="com.localhost.caddy"  # Shared across all *.localhost projects
+
+PLIST_BACKEND="$HOME/Library/LaunchAgents/${SERVICE_BACKEND}.plist"
+PLIST_FRONTEND="$HOME/Library/LaunchAgents/${SERVICE_FRONTEND}.plist"
+PLIST_CADDY="$HOME/Library/LaunchAgents/${SERVICE_CADDY}.plist"
+
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG_DIR="$HOME/.cigna-tracker/logs"
+
+# Shared Caddy location - convention for all *.localhost projects
+# Each project adds: ~/Caddy/sites/<name>.Caddyfile
+CADDY_HOME="$HOME/Caddy"
+CADDY_SITES_DIR="$CADDY_HOME/sites"
+CADDY_LOGS_DIR="$CADDY_HOME/logs"
+CADDY_MAIN_CONFIG="$CADDY_HOME/Caddyfile"
+MY_CADDY_SITE="$CADDY_SITES_DIR/cigna.Caddyfile"
+
+# Ports
+BACKEND_PORT=3001
+FRONTEND_PORT=5173
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; }
+header() { echo -e "${BLUE}=== $1 ===${NC}"; }
+
+check_prerequisites() {
+    if ! command -v nix &>/dev/null; then
+        error "nix not found. Please install Nix first."
+        exit 1
+    fi
+
+    if [[ ! -f "$PROJECT_DIR/flake.nix" ]]; then
+        error "flake.nix not found in $PROJECT_DIR"
+        exit 1
+    fi
+
+    if [[ ! -d "$PROJECT_DIR/frontend/node_modules" ]]; then
+        warn "node_modules not found. Running pnpm install..."
+        (cd "$PROJECT_DIR" && nix develop --command pnpm install)
+        (cd "$PROJECT_DIR/frontend" && nix develop --command pnpm install)
+    fi
+}
+
+# === Caddy Setup (Shared across all *.localhost projects) ===
+
+setup_caddy_dirs() {
+    mkdir -p "$CADDY_SITES_DIR"
+    mkdir -p "$CADDY_LOGS_DIR"
+    mkdir -p "$LOG_DIR"
+    
+    # Create README if it doesn't exist
+    if [[ ! -f "$CADDY_HOME/README.md" ]]; then
+        cat > "$CADDY_HOME/README.md" << 'HEREDOC'
+# ~/Caddy - Shared Local Development Proxy
+
+This folder contains the shared Caddy reverse proxy configuration for all `*.localhost` development projects.
+
+## How it works
+
+- **One Caddy instance** serves all `*.localhost` domains
+- Each project registers itself by adding a config file to `sites/`
+- Caddy auto-reloads when configs change
+
+## Structure
+
+```
+~/Caddy/
+├── Caddyfile        # Main config (imports all sites)
+├── sites/           # One file per project
+│   ├── cigna.Caddyfile    → http://cigna.localhost
+│   ├── qwen.Caddyfile     → http://qwen.localhost
+│   └── ...
+└── logs/
+    ├── access.log
+    └── error.log
+```
+
+## Adding a new project
+
+Create `~/Caddy/sites/<name>.Caddyfile`:
+
+```caddyfile
+http://myapp.localhost {
+    reverse_proxy localhost:3000
+}
+```
+
+Then reload Caddy:
+```bash
+launchctl kickstart -k gui/$UID/com.localhost.caddy
+```
+
+## Service management
+
+```bash
+# Status
+launchctl list | grep caddy
+
+# Logs
+tail -f ~/Caddy/logs/error.log
+
+# Restart
+launchctl kickstart -k gui/$UID/com.localhost.caddy
+```
+
+## Why *.localhost works without /etc/hosts
+
+Modern browsers and macOS resolve any `*.localhost` domain to `127.0.0.1` automatically (RFC 6761).
+HEREDOC
+        info "Created README at $CADDY_HOME/README.md"
+    fi
+}
+
+generate_main_caddyfile() {
+    # Main Caddyfile that imports all site configs
+    cat > "$CADDY_MAIN_CONFIG" << 'EOF'
+# Global Caddy config for all *.localhost domains
+# Site configs are imported from ~/.config/caddy/sites/
+
+import sites/*.Caddyfile
+EOF
+    info "Generated main Caddyfile at $CADDY_MAIN_CONFIG"
+}
+
+generate_site_caddyfile() {
+    cat > "$MY_CADDY_SITE" << EOF
+# Cigna Envoy Tracker - http://cigna.localhost
+http://cigna.localhost {
+	handle /api/* {
+		reverse_proxy localhost:${BACKEND_PORT}
+	}
+	handle {
+		reverse_proxy localhost:${FRONTEND_PORT}
+	}
+}
+EOF
+    info "Generated site config at $MY_CADDY_SITE"
+}
+
+generate_caddy_plist() {
+    # Find caddy binary from nix store (use any project that has it)
+    local caddy_bin
+    caddy_bin=$(nix develop "$PROJECT_DIR" --command which caddy 2>/dev/null || true)
+    
+    if [[ -z "$caddy_bin" ]]; then
+        error "Could not find caddy. Make sure it's in flake.nix"
+        exit 1
+    fi
+
+    cat > "$PLIST_CADDY" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${SERVICE_CADDY}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>${caddy_bin}</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>${CADDY_MAIN_CONFIG}</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>${CADDY_HOME}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${HOME}</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>${CADDY_LOGS_DIR}/caddy.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>${CADDY_LOGS_DIR}/caddy.stderr.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+EOF
+    info "Generated Caddy plist at $PLIST_CADDY"
+}
+
+# === Project Services ===
+
+generate_backend_plist() {
+    mkdir -p "$LOG_DIR"
+
+    cat > "$PLIST_BACKEND" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${SERVICE_BACKEND}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/nix/var/nix/profiles/default/bin/nix</string>
+        <string>develop</string>
+        <string>${PROJECT_DIR}</string>
+        <string>--command</string>
+        <string>npx</string>
+        <string>tsx</string>
+        <string>src/server/api.ts</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>${PROJECT_DIR}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${HOME}</string>
+        <key>PATH</key>
+        <string>/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PORT</key>
+        <string>${BACKEND_PORT}</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>${LOG_DIR}/backend.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>${LOG_DIR}/backend.stderr.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+EOF
+    info "Generated backend plist at $PLIST_BACKEND"
+}
+
+generate_frontend_plist() {
+    mkdir -p "$LOG_DIR"
+
+    cat > "$PLIST_FRONTEND" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${SERVICE_FRONTEND}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/nix/var/nix/profiles/default/bin/nix</string>
+        <string>develop</string>
+        <string>${PROJECT_DIR}</string>
+        <string>--command</string>
+        <string>bash</string>
+        <string>-c</string>
+        <string>cd frontend &amp;&amp; npx vite --port ${FRONTEND_PORT}</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>${PROJECT_DIR}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${HOME}</string>
+        <key>PATH</key>
+        <string>/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>${LOG_DIR}/frontend.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>${LOG_DIR}/frontend.stderr.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+EOF
+    info "Generated frontend plist at $PLIST_FRONTEND"
+}
+
+# === Commands ===
+
+reload_caddy() {
+    # Gracefully reload Caddy config without restart
+    if launchctl list 2>/dev/null | grep -q "$SERVICE_CADDY"; then
+        info "Reloading Caddy configuration..."
+        # Caddy supports graceful reload via admin API
+        curl -s -X POST http://localhost:2019/load \
+            -H "Content-Type: text/caddyfile" \
+            --data-binary @"$CADDY_MAIN_CONFIG" 2>/dev/null || true
+    fi
+}
+
+do_install() {
+    info "Installing Cigna Envoy Tracker services..."
+    check_prerequisites
+    setup_caddy_dirs
+
+    # Unload existing services
+    for svc in "$SERVICE_BACKEND" "$SERVICE_FRONTEND"; do
+        if launchctl list 2>/dev/null | grep -q "$svc"; then
+            warn "$svc already loaded. Unloading first..."
+            launchctl unload "$HOME/Library/LaunchAgents/${svc}.plist" 2>/dev/null || true
+        fi
+    done
+
+    # Generate configs
+    generate_backend_plist
+    generate_frontend_plist
+    generate_site_caddyfile
+
+    # Setup shared Caddy if not already running
+    if ! launchctl list 2>/dev/null | grep -q "$SERVICE_CADDY"; then
+        info "Setting up shared Caddy reverse proxy..."
+        generate_main_caddyfile
+        generate_caddy_plist
+        launchctl load "$PLIST_CADDY"
+    else
+        info "Shared Caddy already running, reloading config..."
+        reload_caddy
+    fi
+
+    # Load project services
+    info "Loading backend service..."
+    launchctl load "$PLIST_BACKEND"
+
+    info "Loading frontend service..."
+    launchctl load "$PLIST_FRONTEND"
+
+    sleep 3
+    echo ""
+    do_status
+}
+
+do_uninstall() {
+    info "Uninstalling Cigna Envoy Tracker services..."
+
+    # Unload project services
+    for plist in "$PLIST_BACKEND" "$PLIST_FRONTEND"; do
+        if [[ -f "$plist" ]]; then
+            launchctl unload "$plist" 2>/dev/null || true
+            rm -f "$plist"
+            info "Removed $(basename "$plist")"
+        fi
+    done
+
+    # Remove site config
+    if [[ -f "$MY_CADDY_SITE" ]]; then
+        rm -f "$MY_CADDY_SITE"
+        info "Removed Caddy site config"
+        reload_caddy
+    fi
+
+    # Check if any other sites remain
+    local remaining_sites
+    remaining_sites=$(find "$CADDY_SITES_DIR" -name "*.Caddyfile" 2>/dev/null | wc -l | tr -d ' ')
+    
+    if [[ "$remaining_sites" -eq 0 ]]; then
+        warn "No other *.localhost sites configured."
+        echo -n "  Remove shared Caddy service too? [y/N] "
+        read -r response
+        if [[ "$response" =~ ^[Yy]$ ]]; then
+            if [[ -f "$PLIST_CADDY" ]]; then
+                launchctl unload "$PLIST_CADDY" 2>/dev/null || true
+                rm -f "$PLIST_CADDY"
+                info "Removed shared Caddy service"
+            fi
+        fi
+    else
+        info "$remaining_sites other site(s) still using Caddy"
+    fi
+
+    info "Uninstall complete."
+}
+
+show_service_status() {
+    local name="$1"
+    local service_id="$2"
+    local svc_info
+    svc_info=$(launchctl list 2>/dev/null | grep "$service_id" || true)
+    if [[ -n "$svc_info" ]]; then
+        local pid=$(echo "$svc_info" | awk '{print $1}')
+        local exit_code=$(echo "$svc_info" | awk '{print $2}')
+        if [[ "$pid" != "-" && "$pid" =~ ^[0-9]+$ ]]; then
+            echo -e "  $name: ${GREEN}Running${NC} (PID: $pid)"
+        elif [[ "$exit_code" != "0" && "$exit_code" != "-" ]]; then
+            echo -e "  $name: ${RED}Crashed${NC} (exit: $exit_code)"
+        else
+            echo -e "  $name: ${YELLOW}Loaded but not running${NC}"
+        fi
+    else
+        echo -e "  $name: ${RED}Not installed${NC}"
+    fi
+}
+
+do_status() {
+    header "Service Status"
+    show_service_status "Backend" "$SERVICE_BACKEND"
+    show_service_status "Frontend" "$SERVICE_FRONTEND"
+    show_service_status "Caddy (shared)" "$SERVICE_CADDY"
+
+    echo ""
+    header "Health Check"
+    if curl -s "http://localhost:${BACKEND_PORT}/api/stats" 2>/dev/null | grep -q "claims"; then
+        echo -e "  Backend API (${BACKEND_PORT}): ${GREEN}Healthy${NC}"
+    else
+        echo -e "  Backend API (${BACKEND_PORT}): ${RED}Not responding${NC}"
+    fi
+    
+    if curl -s "http://localhost:${FRONTEND_PORT}/" 2>/dev/null | grep -q -E "(html|script)"; then
+        echo -e "  Frontend (${FRONTEND_PORT}): ${GREEN}Running${NC}"
+    else
+        echo -e "  Frontend (${FRONTEND_PORT}): ${RED}Not responding${NC}"
+    fi
+
+    if curl -s "http://cigna.localhost/api/stats" 2>/dev/null | grep -q "claims"; then
+        echo -e "  Caddy proxy: ${GREEN}Working${NC}"
+    else
+        echo -e "  Caddy proxy: ${RED}Not working${NC}"
+    fi
+
+    echo ""
+    header "URLs"
+    echo "  App:      ${GREEN}http://cigna.localhost${NC}"
+    echo "  API:      http://cigna.localhost/api"
+    echo "  Direct:   http://localhost:${FRONTEND_PORT} (frontend)"
+    echo "            http://localhost:${BACKEND_PORT} (backend)"
+
+    echo ""
+    header "Other *.localhost Sites"
+    if [[ -d "$CADDY_SITES_DIR" ]]; then
+        for site in "$CADDY_SITES_DIR"/*.Caddyfile; do
+            [[ -f "$site" ]] || continue
+            local domain
+            domain=$(grep -oE 'http://[a-z0-9.-]+\.localhost' "$site" | head -1 || basename "$site" .Caddyfile)
+            echo "  $domain"
+        done
+    fi
+
+    echo ""
+    header "Log Files"
+    echo "  Backend:  $LOG_DIR/backend.stderr.log"
+    echo "  Frontend: $LOG_DIR/frontend.stderr.log"
+    echo "  Caddy:    $CADDY_LOGS_DIR/caddy.stderr.log"
+}
+
+do_logs() {
+    local service="${2:-all}"
+
+    if [[ "$service" == "all" || "$service" == "backend" ]]; then
+        header "Backend Logs (last 30 lines)"
+        tail -30 "$LOG_DIR/backend.stderr.log" 2>/dev/null || echo "  (no logs yet)"
+        echo ""
+    fi
+
+    if [[ "$service" == "all" || "$service" == "frontend" ]]; then
+        header "Frontend Logs (last 20 lines)"
+        tail -20 "$LOG_DIR/frontend.stderr.log" 2>/dev/null || echo "  (no logs yet)"
+        echo ""
+    fi
+
+    if [[ "$service" == "all" || "$service" == "caddy" ]]; then
+        header "Caddy Logs (last 15 lines)"
+        tail -15 "$CADDY_LOGS_DIR/caddy.stderr.log" 2>/dev/null || echo "  (no logs yet)"
+    fi
+}
+
+do_restart() {
+    info "Restarting Cigna Envoy Tracker services..."
+
+    for plist in "$PLIST_BACKEND" "$PLIST_FRONTEND"; do
+        if [[ -f "$plist" ]]; then
+            launchctl unload "$plist" 2>/dev/null || true
+        fi
+    done
+
+    sleep 1
+
+    for plist in "$PLIST_BACKEND" "$PLIST_FRONTEND"; do
+        if [[ -f "$plist" ]]; then
+            launchctl load "$plist"
+        else
+            error "Service not installed. Run: $0 install"
+            exit 1
+        fi
+    done
+
+    sleep 3
+    do_status
+}
+
+# === Main ===
+
+case "${1:-help}" in
+    install)
+        do_install
+        ;;
+    uninstall|remove)
+        do_uninstall
+        ;;
+    status)
+        do_status
+        ;;
+    logs)
+        do_logs "$@"
+        ;;
+    restart)
+        do_restart
+        ;;
+    *)
+        echo "Cigna Envoy Tracker Service Manager"
+        echo ""
+        echo "Usage: $0 <command>"
+        echo ""
+        echo "Commands:"
+        echo "  install    Install backend, frontend, and Caddy as LaunchAgents"
+        echo "  uninstall  Stop and remove LaunchAgents"
+        echo "  status     Show service status and health check"
+        echo "  restart    Restart backend and frontend services"
+        echo "  logs       Show recent log output (logs [backend|frontend|caddy|all])"
+        echo ""
+        echo "The services will:"
+        echo "  - Start automatically on login"
+        echo "  - Restart if they crash"
+        echo "  - Share Caddy with other *.localhost projects"
+        echo ""
+        echo "URL: ${GREEN}http://cigna.localhost${NC}"
+        echo ""
+        echo "Log files: $LOG_DIR/"
+        ;;
+esac

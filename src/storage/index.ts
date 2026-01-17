@@ -1,7 +1,7 @@
 /**
  * Storage Layer
  *
- * JSON file-based storage for claims, documents, and assignments.
+ * JSON file-based storage for claims, documents, assignments, patients, and illnesses.
  * Provides a simple, human-readable, git-friendly persistence layer.
  */
 
@@ -19,3 +19,6 @@ export {
 export * from "./claims.js";
 export * from "./documents.js";
 export * from "./assignments.js";
+export * from "./draft-claims.js";
+export * from "./patients.js";
+export * from "./illnesses.js";

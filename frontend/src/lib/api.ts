@@ -67,6 +67,18 @@ export interface DetectedAmount {
   confidence: number;
 }
 
+export interface CalendarAttendee {
+  email: string;
+  name?: string;
+  response?: string;
+  organizer?: boolean;
+}
+
+export interface CalendarOrganizer {
+  email?: string;
+  displayName?: string;
+}
+
 export interface MedicalDocument {
   id: string;
   sourceType: "email" | "attachment" | "calendar";
@@ -86,13 +98,55 @@ export interface MedicalDocument {
   bodySnippet?: string;
   date?: string;
   medicalKeywords: string[];
+  // Calendar-specific fields
+  calendarEventId?: string;
+  calendarId?: string;
+  calendarSummary?: string;
+  calendarDescription?: string;
+  calendarLocation?: string;
+  calendarStart?: string;
+  calendarEnd?: string;
+  calendarAllDay?: boolean;
+  calendarAttendees?: CalendarAttendee[];
+  calendarOrganizer?: CalendarOrganizer;
+  calendarConferenceUrl?: string;
   processedAt: string;
+}
+
+export type DraftClaimStatus = "pending" | "accepted" | "rejected";
+export type DraftClaimDateSource = "calendar" | "manual" | "document";
+export type DraftClaimRange = "forever" | "last_month" | "last_week";
+
+export interface DraftClaimPayment {
+  amount: number;
+  currency: string;
+  rawText?: string;
+  context?: string;
+  confidence?: number;
+}
+
+export interface DraftClaim {
+  id: string;
+  status: DraftClaimStatus;
+  primaryDocumentId: string;
+  documentIds: string[];
+  payment: DraftClaimPayment;
+  illnessId?: string;
+  doctorNotes?: string;
+  treatmentDate?: string;
+  treatmentDateSource?: DraftClaimDateSource;
+  calendarDocumentIds?: string[];
+  generatedAt: string;
+  updatedAt: string;
+  acceptedAt?: string;
+  rejectedAt?: string;
 }
 
 export interface DocumentClaimAssignment {
   id: string;
   documentId: string;
   claimId: string;
+  illnessId?: string;
   matchScore: number;
   matchReasonType: string;
   matchReason: string;
@@ -117,6 +171,64 @@ export interface DocumentClaimAssignment {
   reviewNotes?: string;
 }
 
+export interface Patient {
+  id: string;
+  cignaId: string;
+  name: string;
+  relationship: "Employee" | "Member" | "Beneficiary";
+  dateOfBirth: string;
+  citizenship?: string;
+  workLocation?: string;
+  email?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RelevantAccount {
+  email: string;
+  name?: string;
+  role?: "provider" | "pharmacy" | "lab" | "insurance" | "other";
+  addedAt: string;
+  sourceDocumentId?: string;
+}
+
+export interface Illness {
+  id: string;
+  patientId: string;
+  name: string;
+  icdCode?: string;
+  type: "acute" | "chronic";
+  onsetDate?: string;
+  resolvedDate?: string;
+  notes?: string;
+  relevantAccounts: RelevantAccount[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreatePatientInput {
+  cignaId: string;
+  name: string;
+  relationship: "Employee" | "Member" | "Beneficiary";
+  dateOfBirth: string;
+  citizenship?: string;
+  workLocation?: string;
+  email?: string;
+}
+
+export interface CreateIllnessInput {
+  patientId: string;
+  name: string;
+  icdCode?: string;
+  type: "acute" | "chronic";
+  onsetDate?: string;
+  notes?: string;
+}
+
+export interface PreviewAccountsResponse {
+  accounts: RelevantAccount[];
+}
+
 export interface Stats {
   claims: number;
   documents: number;
@@ -124,6 +236,12 @@ export interface Stats {
     total: number;
     candidates: number;
     confirmed: number;
+    rejected: number;
+  };
+  draftClaims: {
+    total: number;
+    pending: number;
+    accepted: number;
     rejected: number;
   };
 }
@@ -143,15 +261,47 @@ export const api = {
   getDocument: (id: string) => fetchJson<MedicalDocument>(`/documents/${id}`),
   getMedicalBills: () => fetchJson<MedicalDocument[]>("/documents/medical-bills"),
 
+  // Patients
+  getPatients: () => fetchJson<Patient[]>("/patients"),
+  getPatient: (id: string) => fetchJson<Patient>(`/patients/${id}`),
+  createPatient: (input: CreatePatientInput) =>
+    fetchJson<Patient>("/patients", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updatePatient: (id: string, updates: Partial<CreatePatientInput>) =>
+    fetchJson<Patient>(`/patients/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(updates),
+    }),
+
+  // Illnesses
+  getIllnesses: () => fetchJson<Illness[]>("/illnesses"),
+  getIllness: (id: string) => fetchJson<Illness>(`/illnesses/${id}`),
+  getPatientIllnesses: (patientId: string) =>
+    fetchJson<Illness[]>(`/patients/${patientId}/illnesses`),
+  getPatientActiveIllnesses: (patientId: string) =>
+    fetchJson<Illness[]>(`/patients/${patientId}/illnesses/active`),
+  createIllness: (input: CreateIllnessInput) =>
+    fetchJson<Illness>("/illnesses", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateIllness: (id: string, updates: Partial<CreateIllnessInput>) =>
+    fetchJson<Illness>(`/illnesses/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(updates),
+    }),
+
   // Assignments
   getAssignments: () => fetchJson<DocumentClaimAssignment[]>("/assignments"),
   getCandidates: () => fetchJson<DocumentClaimAssignment[]>("/assignments/candidates"),
   getConfirmed: () => fetchJson<DocumentClaimAssignment[]>("/assignments/confirmed"),
 
-  confirmAssignment: (id: string, reviewNotes?: string) =>
+  confirmAssignment: (id: string, illnessId: string, reviewNotes?: string) =>
     fetchJson<DocumentClaimAssignment>(`/assignments/${id}/confirm`, {
       method: "POST",
-      body: JSON.stringify({ reviewNotes }),
+      body: JSON.stringify({ illnessId, reviewNotes }),
     }),
 
   rejectAssignment: (id: string, reviewNotes?: string) =>
@@ -160,10 +310,49 @@ export const api = {
       body: JSON.stringify({ reviewNotes }),
     }),
 
+  previewAccounts: (assignmentId: string) =>
+    fetchJson<PreviewAccountsResponse>(`/assignments/${assignmentId}/preview-accounts`),
+
+  // Draft Claims
+  getDraftClaims: () => fetchJson<DraftClaim[]>("/draft-claims"),
+  generateDraftClaims: (range: DraftClaimRange) =>
+    fetchJson<{ created: number; drafts: DraftClaim[] }>("/draft-claims/generate", {
+      method: "POST",
+      body: JSON.stringify({ range }),
+    }),
+  acceptDraftClaim: (
+    id: string,
+    input: {
+      illnessId: string;
+      doctorNotes: string;
+      calendarDocumentIds?: string[];
+      treatmentDate?: string;
+    }
+  ) =>
+    fetchJson<DraftClaim>(`/draft-claims/${id}/accept`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  rejectDraftClaim: (id: string) =>
+    fetchJson<DraftClaim>(`/draft-claims/${id}/reject`, {
+      method: "POST",
+    }),
+  runDraftMatching: () =>
+    fetchJson<{ created: number; assignments: DocumentClaimAssignment[] }>(
+      "/draft-claims/run-matching",
+      { method: "POST" }
+    ),
+
   // Processing
   processDocuments: () =>
     fetchJson<{ processed: number; documents: MedicalDocument[] }>(
       "/process/documents",
+      { method: "POST" }
+    ),
+
+  processCalendar: () =>
+    fetchJson<{ processed: number; documents: MedicalDocument[] }>(
+      "/process/calendar",
       { method: "POST" }
     ),
 

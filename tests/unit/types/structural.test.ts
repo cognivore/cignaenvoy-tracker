@@ -103,6 +103,7 @@ describe("Type Exports", () => {
         patientId: "patient-id",
         name: "Anxiety",
         type: "chronic",
+        relevantAccounts: [],
         createdAt: new Date(),
         updatedAt: new Date(),
       };

@@ -294,7 +294,7 @@ export class QwenClient {
             account: options.account,
             after_date: options.afterDate,
             before_date: options.beforeDate,
-            limit: options.limit ?? 50,
+            limit: options.limit ?? 1000,
           },
         }),
       }
@@ -346,7 +346,7 @@ export class QwenClient {
             after_date: options.afterDate,
             before_date: options.beforeDate,
             has_attachments: options.hasAttachments,
-            limit: options.limit ?? 50,
+            limit: options.limit ?? 1000,
           },
         }),
       }
@@ -419,7 +419,7 @@ export class QwenClient {
             account: options.account,
             after_date: options.afterDate,
             before_date: options.beforeDate,
-            limit: options.limit ?? 50,
+            limit: options.limit ?? 1000,
           },
         }),
       }
@@ -460,7 +460,7 @@ export class QwenClient {
             account: options.account,
             after_date: options.afterDate,
             before_date: options.beforeDate,
-            limit: options.limit ?? 50,
+            limit: options.limit ?? 1000,
           },
         }),
       }

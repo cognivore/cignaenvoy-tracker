@@ -42,11 +42,19 @@ export async function createAssignment(
 }
 
 /**
+ * Extended update input that includes illnessId for confirmations.
+ */
+export interface ExtendedUpdateInput extends UpdateAssignmentInput {
+  /** Illness ID - required for confirmation */
+  illnessId?: string;
+}
+
+/**
  * Update an assignment (confirm/reject).
  */
 export async function updateAssignment(
   id: string,
-  updates: UpdateAssignmentInput,
+  updates: ExtendedUpdateInput,
   confirmedBy?: string
 ): Promise<DocumentClaimAssignment | null> {
   const existing = await assignmentsStorage.get(id);
@@ -72,15 +80,21 @@ export async function updateAssignment(
 
 /**
  * Confirm an assignment.
+ * Requires illnessId to link the evidence to a specific illness.
  */
 export async function confirmAssignment(
   id: string,
+  illnessId: string,
   confirmedBy?: string,
   reviewNotes?: string
 ): Promise<DocumentClaimAssignment | null> {
+  if (!illnessId) {
+    throw new Error("illnessId is required to confirm an assignment");
+  }
+
   return updateAssignment(
     id,
-    { status: "confirmed", ...(reviewNotes && { reviewNotes }) },
+    { status: "confirmed", illnessId, ...(reviewNotes && { reviewNotes }) },
     confirmedBy
   );
 }

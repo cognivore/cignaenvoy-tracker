@@ -6,6 +6,40 @@
 /** Type of illness based on duration and nature */
 export type IllnessType = "acute" | "chronic";
 
+/** Role of a relevant account in relation to an illness */
+export type AccountRole = "provider" | "pharmacy" | "lab" | "insurance" | "other";
+
+/** All account roles for iteration */
+export const ACCOUNT_ROLES: readonly AccountRole[] = [
+  "provider",
+  "pharmacy",
+  "lab",
+  "insurance",
+  "other",
+] as const;
+
+/**
+ * Represents an email address/account relevant to an illness.
+ * These are extracted from evidence documents (emails, calendar events)
+ * when a hydration candidate is confirmed.
+ */
+export interface RelevantAccount {
+  /** Email address */
+  email: string;
+
+  /** Display name associated with the email */
+  name?: string;
+
+  /** Role of this account (provider, pharmacy, lab, etc.) */
+  role?: AccountRole;
+
+  /** When this account was added */
+  addedAt: Date;
+
+  /** ID of the source document this account was extracted from */
+  sourceDocumentId?: string;
+}
+
 /**
  * Represents a medical condition that a patient has.
  * Illnesses cause claims when treated with facility visits or prescribed medication.
@@ -36,6 +70,12 @@ export interface Illness {
   /** Additional notes about the condition */
   notes?: string;
 
+  /**
+   * Email addresses/accounts relevant to this illness.
+   * Populated from evidence documents during hydration confirmation.
+   */
+  relevantAccounts: RelevantAccount[];
+
   /** Creation timestamp */
   createdAt: Date;
 
@@ -46,7 +86,7 @@ export interface Illness {
 /**
  * Input type for creating a new illness (without auto-generated fields).
  */
-export type CreateIllnessInput = Omit<Illness, "id" | "createdAt" | "updatedAt">;
+export type CreateIllnessInput = Omit<Illness, "id" | "relevantAccounts" | "createdAt" | "updatedAt">;
 
 /**
  * Input type for updating an existing illness.

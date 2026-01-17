@@ -25,6 +25,7 @@ export type DocumentClassification =
   | "prescription"
   | "lab_result"
   | "insurance_statement"
+  | "appointment"
   | "unknown";
 
 /** All document classifications */
@@ -35,6 +36,7 @@ export const DOCUMENT_CLASSIFICATIONS: readonly DocumentClassification[] = [
   "prescription",
   "lab_result",
   "insurance_statement",
+  "appointment",
   "unknown",
 ] as const;
 
@@ -59,7 +61,35 @@ export interface DetectedAmount {
 }
 
 /**
- * Medical document from email/attachment dumps.
+ * Calendar attendee information.
+ */
+export interface CalendarAttendee {
+  /** Email address of the attendee */
+  email: string;
+
+  /** Display name of the attendee */
+  name?: string;
+
+  /** Response status (accepted, declined, tentative, needsAction) */
+  response?: string;
+
+  /** Whether this attendee is the organizer */
+  organizer?: boolean;
+}
+
+/**
+ * Calendar organizer information.
+ */
+export interface CalendarOrganizer {
+  /** Email address of the organizer */
+  email?: string;
+
+  /** Display name of the organizer */
+  displayName?: string;
+}
+
+/**
+ * Medical document from email/attachment/calendar.
  * Represents any document that appears to be medical-related.
  */
 export interface MedicalDocument {
@@ -116,6 +146,41 @@ export interface MedicalDocument {
 
   /** Keywords found that suggest medical content */
   medicalKeywords: string[];
+
+  // === Calendar-specific fields ===
+
+  /** Calendar event ID if from calendar */
+  calendarEventId?: string;
+
+  /** Calendar ID the event belongs to */
+  calendarId?: string;
+
+  /** Calendar event summary/title */
+  calendarSummary?: string;
+
+  /** Calendar event description */
+  calendarDescription?: string;
+
+  /** Calendar event location */
+  calendarLocation?: string;
+
+  /** Calendar event start time */
+  calendarStart?: Date;
+
+  /** Calendar event end time */
+  calendarEnd?: Date;
+
+  /** Whether this is an all-day event */
+  calendarAllDay?: boolean;
+
+  /** Attendees from calendar event */
+  calendarAttendees?: CalendarAttendee[];
+
+  /** Organizer from calendar event */
+  calendarOrganizer?: CalendarOrganizer;
+
+  /** Video conference URL if present */
+  calendarConferenceUrl?: string;
 
   /** Timestamp when this document was processed */
   processedAt: Date;

@@ -124,12 +124,17 @@ function calculateMatchScore(
   const reasons: MatchReason[] = [];
   let totalScore = 0;
 
-  // Find best amount match
-  const bestAmount = findBestAmountMatch(
-    document.detectedAmounts,
-    claim.claimAmount,
-    claim.claimCurrency
-  );
+  // Calendar events don't have amounts, so we use different scoring
+  const isCalendarEvent = document.sourceType === "calendar";
+
+  // Find best amount match (skip for calendar events)
+  const bestAmount = isCalendarEvent
+    ? null
+    : findBestAmountMatch(
+      document.detectedAmounts,
+      claim.claimAmount,
+      claim.claimCurrency
+    );
 
   let amountMatchDetails: MatchResult["amountMatchDetails"];
 
@@ -196,29 +201,77 @@ function calculateMatchScore(
   }
 
   // Date proximity check
+  // Check against all treatment dates (primary + line items) to find best match
   let dateMatchDetails: MatchResult["dateMatchDetails"];
+  const documentDate = document.date ?? document.calendarStart;
 
-  if (document.date) {
-    const daysDiff = daysBetween(document.date, claim.treatmentDate);
+  if (documentDate) {
+    // Check primary treatment date
+    let bestDaysDiff = daysBetween(documentDate, claim.treatmentDate);
+    let bestMatchDate = claim.treatmentDate;
+
+    // Also check line item dates for ALL documents (not just calendar events)
+    // This ensures we find the closest treatment date
+    for (const lineItem of claim.lineItems) {
+      const lineItemDaysDiff = daysBetween(documentDate, lineItem.treatmentDate);
+      if (lineItemDaysDiff < bestDaysDiff) {
+        bestDaysDiff = lineItemDaysDiff;
+        bestMatchDate = lineItem.treatmentDate;
+      }
+    }
 
     dateMatchDetails = {
-      documentDate: document.date,
-      claimDate: claim.treatmentDate,
-      daysDifference: daysDiff,
+      documentDate,
+      claimDate: bestMatchDate,
+      daysDifference: bestDaysDiff,
     };
 
-    if (daysDiff <= MATCH_THRESHOLDS.DATE_PROXIMITY_DAYS) {
-      const proximityScore =
-        MATCH_THRESHOLDS.DATE_PROXIMITY_BONUS *
-        (1 - daysDiff / MATCH_THRESHOLDS.DATE_PROXIMITY_DAYS);
+    // CRITICAL: Reject matches where dates are too far apart
+    // This prevents matching documents from completely wrong time periods
+    if (bestDaysDiff > MATCH_THRESHOLDS.MAX_DATE_MISMATCH_DAYS) {
+      // Date mismatch is too severe - no match possible
+      return null;
+    }
+
+    // Apply penalty for moderate date mismatches
+    if (bestDaysDiff > MATCH_THRESHOLDS.DATE_MISMATCH_PENALTY_THRESHOLD) {
+      const penalty = MATCH_THRESHOLDS.DATE_MISMATCH_PENALTY;
+      totalScore -= penalty;
+      reasons.push({
+        type: "date_proximity",
+        score: -penalty,
+        description: `Date mismatch penalty: document ${documentDate.toISOString().split("T")[0]} is ${bestDaysDiff} days from nearest treatment ${bestMatchDate.toISOString().split("T")[0]}`,
+      });
+    } else if (bestDaysDiff <= MATCH_THRESHOLDS.DATE_PROXIMITY_DAYS) {
+      // Calendar events get higher date proximity bonus (primary match criterion)
+      const baseBonus = isCalendarEvent
+        ? MATCH_THRESHOLDS.EXACT_AMOUNT_SCORE // Same as exact amount for calendar events
+        : MATCH_THRESHOLDS.DATE_PROXIMITY_BONUS;
+
+      // Exact date match for calendar events is very strong
+      const dateScore =
+        bestDaysDiff === 0 && isCalendarEvent
+          ? baseBonus
+          : baseBonus * (1 - bestDaysDiff / MATCH_THRESHOLDS.DATE_PROXIMITY_DAYS);
 
       reasons.push({
         type: "date_proximity",
-        score: proximityScore,
-        description: `Date proximity: document ${document.date.toISOString().split("T")[0]} is ${daysDiff} days from treatment ${claim.treatmentDate.toISOString().split("T")[0]}`,
+        score: dateScore,
+        description: isCalendarEvent
+          ? `Calendar event on ${documentDate.toISOString().split("T")[0]} ${bestDaysDiff === 0 ? "matches" : "near"} treatment ${bestMatchDate.toISOString().split("T")[0]} (${bestDaysDiff} days diff)`
+          : `Date proximity: document ${documentDate.toISOString().split("T")[0]} is ${bestDaysDiff} days from treatment ${bestMatchDate.toISOString().split("T")[0]}`,
       });
-      totalScore += proximityScore;
+      totalScore += dateScore;
     }
+  } else {
+    // No date on document - apply a penalty since we can't verify temporal relevance
+    const penalty = MATCH_THRESHOLDS.DATE_MISMATCH_PENALTY / 2;
+    totalScore -= penalty;
+    reasons.push({
+      type: "date_proximity",
+      score: -penalty,
+      description: "No date found on document - temporal relevance uncertain",
+    });
   }
 
   // Provider name match (check if medical keywords match treatment description)
@@ -227,14 +280,30 @@ function calculateMatchScore(
     .join(" ")
     .toLowerCase();
 
-  for (const keyword of document.medicalKeywords) {
-    if (claimDescription.includes(keyword.toLowerCase())) {
+  // For calendar events, also check summary and location
+  const searchableText = isCalendarEvent
+    ? [
+      ...document.medicalKeywords,
+      document.calendarSummary,
+      document.calendarLocation,
+    ].filter(Boolean)
+    : document.medicalKeywords;
+
+  for (const keyword of searchableText) {
+    if (keyword && claimDescription.includes(keyword.toLowerCase())) {
+      // Calendar event location/summary matches are worth more
+      const keywordScore = isCalendarEvent
+        ? MATCH_THRESHOLDS.PROVIDER_MATCH_BONUS * 2
+        : MATCH_THRESHOLDS.PROVIDER_MATCH_BONUS;
+
       reasons.push({
         type: "provider_match",
-        score: MATCH_THRESHOLDS.PROVIDER_MATCH_BONUS,
-        description: `Keyword match: "${keyword}" found in claim description`,
+        score: keywordScore,
+        description: isCalendarEvent
+          ? `Calendar event "${document.calendarSummary}" matches treatment description`
+          : `Keyword match: "${keyword}" found in claim description`,
       });
-      totalScore += MATCH_THRESHOLDS.PROVIDER_MATCH_BONUS;
+      totalScore += keywordScore;
       break; // Only count once
     }
   }
@@ -293,8 +362,13 @@ export class Matcher {
   ): Promise<DocumentClaimAssignment[]> {
     const assignments: DocumentClaimAssignment[] = [];
 
-    // Only process documents with detected amounts
-    if (document.detectedAmounts.length === 0) {
+    // Check if document is matchable:
+    // - Has detected amounts (for bills)
+    // - OR is a calendar event with a date
+    const isCalendarEvent = document.sourceType === "calendar";
+    const hasDate = document.date || document.calendarStart;
+
+    if (document.detectedAmounts.length === 0 && !(isCalendarEvent && hasDate)) {
       return assignments;
     }
 
@@ -349,17 +423,30 @@ export class Matcher {
   }
 
   /**
-   * Match all medical bills against all claims.
+   * Match all matchable documents against all claims.
+   * Includes medical bills (with amounts) and calendar events (with dates).
    */
   async matchAllDocuments(): Promise<DocumentClaimAssignment[]> {
     const allAssignments: DocumentClaimAssignment[] = [];
 
-    // Get all medical bills (documents with amounts)
-    const documents = await getMedicalBills();
+    // Get all documents
+    const allDocuments = await documentsStorage.getAll();
 
-    console.log(`Matching ${documents.length} medical bills against claims...`);
+    // Filter to matchable documents:
+    // - Medical bills with amounts
+    // - Calendar events (appointments) with dates
+    const matchableDocuments = allDocuments.filter(
+      (d) =>
+        (d.classification === "medical_bill" && d.detectedAmounts.length > 0) ||
+        (d.sourceType === "calendar" && (d.date || d.calendarStart))
+    );
 
-    for (const document of documents) {
+    console.log(
+      `Matching ${matchableDocuments.length} documents against claims ` +
+      `(${matchableDocuments.filter((d) => d.sourceType === "calendar").length} calendar events)...`
+    );
+
+    for (const document of matchableDocuments) {
       const assignments = await this.matchDocument(document);
       allAssignments.push(...assignments);
     }
@@ -367,6 +454,43 @@ export class Matcher {
     console.log(`Created ${allAssignments.length} match candidates`);
 
     return allAssignments;
+  }
+
+  /**
+   * Match a set of documents (by object).
+   */
+  async matchDocuments(
+    documents: MedicalDocument[]
+  ): Promise<DocumentClaimAssignment[]> {
+    const uniqueDocuments = Array.from(
+      new Map(documents.map((document) => [document.id, document])).values()
+    );
+
+    const assignments: DocumentClaimAssignment[] = [];
+    for (const document of uniqueDocuments) {
+      const matches = await this.matchDocument(document);
+      assignments.push(...matches);
+    }
+
+    return assignments;
+  }
+
+  /**
+   * Match a set of documents by ID.
+   */
+  async matchDocumentsByIds(
+    documentIds: string[]
+  ): Promise<DocumentClaimAssignment[]> {
+    const uniqueIds = Array.from(new Set(documentIds));
+    const documents = await Promise.all(
+      uniqueIds.map((id) => documentsStorage.get(id))
+    );
+
+    const existingDocuments = documents.filter(
+      (doc): doc is MedicalDocument => !!doc
+    );
+
+    return this.matchDocuments(existingDocuments);
   }
 
   /**

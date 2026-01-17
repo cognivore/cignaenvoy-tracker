@@ -18,10 +18,34 @@ import {
   confirmAssignment,
   rejectAssignment,
 } from "../storage/assignments.js";
+import {
+  draftClaimsStorage,
+  updateDraftClaim,
+} from "../storage/draft-claims.js";
+import {
+  patientsStorage,
+  createPatient,
+  updatePatient,
+  findPatientByCignaId,
+} from "../storage/patients.js";
+import {
+  illnessesStorage,
+  createIllness,
+  updateIllness,
+  getIllnessesForPatient,
+  getActiveIllnesses,
+  addRelevantAccounts,
+} from "../storage/illnesses.js";
 import { ensureStorageDirs } from "../storage/index.js";
 import { DocumentProcessor } from "../services/document-processor.js";
+import { generateDraftClaims } from "../services/draft-claim-generator.js";
 import { Matcher } from "../services/matcher.js";
 import { CignaScraper } from "../services/cigna-scraper.js";
+import { extractAndPrepareAccounts } from "../services/account-extractor.js";
+import type { CreatePatientInput, UpdatePatientInput } from "../types/patient.js";
+import type { CreateIllnessInput, UpdateIllnessInput } from "../types/illness.js";
+import type { DraftClaimRange, DraftClaimDateSource } from "../types/draft-claim.js";
+import type { MedicalDocument } from "../types/medical-document.js";
 
 const PORT = 3001;
 
@@ -64,6 +88,23 @@ async function parseBody(req: http.IncomingMessage): Promise<unknown> {
   });
 }
 
+/**
+ * Extract the earliest treatment date from calendar documents.
+ */
+function getCalendarTreatmentDate(
+  calendarDocs: MedicalDocument[]
+): Date | null {
+  const dates = calendarDocs
+    .map((doc) => doc.calendarStart ?? doc.date)
+    .filter((date): date is Date => !!date)
+    .map((date) => new Date(date));
+
+  if (dates.length === 0) return null;
+
+  const earliest = Math.min(...dates.map((date) => date.getTime()));
+  return new Date(earliest);
+}
+
 // === CLAIMS ROUTES ===
 
 routes.GET["/api/claims"] = async () => {
@@ -92,6 +133,74 @@ routes.GET["/api/documents/medical-bills"] = async () => {
   return getMedicalBills();
 };
 
+// === PATIENTS ROUTES ===
+
+routes.GET["/api/patients"] = async () => {
+  return patientsStorage.getAll();
+};
+
+routes.GET["/api/patients/:id"] = async (_req, _res, params) => {
+  const patient = await patientsStorage.get(params.id!);
+  if (!patient) throw { status: 404, message: "Patient not found" };
+  return patient;
+};
+
+routes.POST["/api/patients"] = async (_req, _res, _params, body) => {
+  const input = body as CreatePatientInput;
+  if (!input.cignaId || !input.name) {
+    throw { status: 400, message: "cignaId and name are required" };
+  }
+  return createPatient(input);
+};
+
+routes.PUT["/api/patients/:id"] = async (_req, _res, params, body) => {
+  const updates = body as UpdatePatientInput;
+  const patient = await updatePatient(params.id!, updates);
+  if (!patient) throw { status: 404, message: "Patient not found" };
+  return patient;
+};
+
+routes.GET["/api/patients/by-cigna-id/:cignaId"] = async (_req, _res, params) => {
+  const patient = await findPatientByCignaId(params.cignaId!);
+  if (!patient) throw { status: 404, message: "Patient not found" };
+  return patient;
+};
+
+// === ILLNESSES ROUTES ===
+
+routes.GET["/api/illnesses"] = async () => {
+  return illnessesStorage.getAll();
+};
+
+routes.GET["/api/illnesses/:id"] = async (_req, _res, params) => {
+  const illness = await illnessesStorage.get(params.id!);
+  if (!illness) throw { status: 404, message: "Illness not found" };
+  return illness;
+};
+
+routes.POST["/api/illnesses"] = async (_req, _res, _params, body) => {
+  const input = body as CreateIllnessInput;
+  if (!input.patientId || !input.name || !input.type) {
+    throw { status: 400, message: "patientId, name, and type are required" };
+  }
+  return createIllness(input);
+};
+
+routes.PUT["/api/illnesses/:id"] = async (_req, _res, params, body) => {
+  const updates = body as UpdateIllnessInput;
+  const illness = await updateIllness(params.id!, updates);
+  if (!illness) throw { status: 404, message: "Illness not found" };
+  return illness;
+};
+
+routes.GET["/api/patients/:patientId/illnesses"] = async (_req, _res, params) => {
+  return getIllnessesForPatient(params.patientId!);
+};
+
+routes.GET["/api/patients/:patientId/illnesses/active"] = async (_req, _res, params) => {
+  return getActiveIllnesses(params.patientId!);
+};
+
 // === ASSIGNMENTS ROUTES ===
 
 routes.GET["/api/assignments"] = async () => {
@@ -107,8 +216,38 @@ routes.GET["/api/assignments/confirmed"] = async () => {
 };
 
 routes.POST["/api/assignments/:id/confirm"] = async (_req, _res, params, body) => {
-  const { reviewNotes } = body as { reviewNotes?: string };
-  const assignment = await confirmAssignment(params.id!, undefined, reviewNotes);
+  const { illnessId, reviewNotes } = body as { illnessId?: string; reviewNotes?: string };
+
+  // Illness ID is required for confirmation
+  if (!illnessId) {
+    throw { status: 400, message: "illnessId is required to confirm an assignment" };
+  }
+
+  // Verify illness exists
+  const illness = await illnessesStorage.get(illnessId);
+  if (!illness) {
+    throw { status: 404, message: "Illness not found" };
+  }
+
+  // Get the assignment to extract accounts from its document
+  const existingAssignment = await assignmentsStorage.get(params.id!);
+  if (!existingAssignment) {
+    throw { status: 404, message: "Assignment not found" };
+  }
+
+  // Get the document to extract accounts
+  const document = await documentsStorage.get(existingAssignment.documentId);
+
+  // Extract and add relevant accounts to the illness
+  if (document) {
+    const accounts = extractAndPrepareAccounts(document);
+    if (accounts.length > 0) {
+      await addRelevantAccounts(illnessId, accounts);
+    }
+  }
+
+  // Confirm the assignment
+  const assignment = await confirmAssignment(params.id!, illnessId, undefined, reviewNotes);
   if (!assignment) throw { status: 404, message: "Assignment not found" };
   return assignment;
 };
@@ -118,6 +257,162 @@ routes.POST["/api/assignments/:id/reject"] = async (_req, _res, params, body) =>
   const assignment = await rejectAssignment(params.id!, reviewNotes);
   if (!assignment) throw { status: 404, message: "Assignment not found" };
   return assignment;
+};
+
+/**
+ * Preview which accounts would be extracted from an assignment's document.
+ */
+routes.GET["/api/assignments/:id/preview-accounts"] = async (_req, _res, params) => {
+  const assignment = await assignmentsStorage.get(params.id!);
+  if (!assignment) throw { status: 404, message: "Assignment not found" };
+
+  const document = await documentsStorage.get(assignment.documentId);
+  if (!document) {
+    return { accounts: [] };
+  }
+
+  const accounts = extractAndPrepareAccounts(document);
+  return { accounts };
+};
+
+// === DRAFT CLAIMS ROUTES ===
+
+routes.GET["/api/draft-claims"] = async () => {
+  return draftClaimsStorage.getAll();
+};
+
+routes.POST["/api/draft-claims/generate"] = async (_req, _res, _params, body) => {
+  const { range } = body as { range?: DraftClaimRange };
+  const selectedRange =
+    range === "forever" || range === "last_month" || range === "last_week"
+      ? range
+      : "forever";
+
+  const drafts = await generateDraftClaims(selectedRange);
+  return { created: drafts.length, drafts };
+};
+
+routes.POST["/api/draft-claims/:id/accept"] = async (_req, _res, params, body) => {
+  const {
+    illnessId,
+    doctorNotes,
+    calendarDocumentIds,
+    treatmentDate,
+  } = body as {
+    illnessId?: string;
+    doctorNotes?: string;
+    calendarDocumentIds?: string[];
+    treatmentDate?: string;
+  };
+
+  if (!illnessId) {
+    throw { status: 400, message: "illnessId is required to accept a draft claim" };
+  }
+
+  const trimmedNotes = doctorNotes?.trim();
+  if (!trimmedNotes) {
+    throw { status: 400, message: "doctorNotes is required to accept a draft claim" };
+  }
+
+  const draft = await draftClaimsStorage.get(params.id!);
+  if (!draft) throw { status: 404, message: "Draft claim not found" };
+
+  const illness = await illnessesStorage.get(illnessId);
+  if (!illness) throw { status: 404, message: "Illness not found" };
+
+  const calendarIds = Array.isArray(calendarDocumentIds)
+    ? calendarDocumentIds.filter(Boolean)
+    : [];
+
+  let finalTreatmentDate: Date | null = null;
+  let dateSource: DraftClaimDateSource | undefined;
+
+  if (treatmentDate) {
+    const parsed = new Date(treatmentDate);
+    if (Number.isNaN(parsed.valueOf())) {
+      throw { status: 400, message: "treatmentDate must be a valid date" };
+    }
+    finalTreatmentDate = parsed;
+    dateSource = "manual";
+  }
+
+  if (!finalTreatmentDate && calendarIds.length > 0) {
+    const calendarDocs = await Promise.all(
+      calendarIds.map((id) => documentsStorage.get(id))
+    );
+
+    if (calendarDocs.some((doc) => !doc)) {
+      throw { status: 404, message: "Calendar document not found" };
+    }
+
+    const validDocs = calendarDocs.filter(
+      (doc): doc is MedicalDocument => !!doc
+    );
+
+    const nonCalendar = validDocs.filter((doc) => doc.sourceType !== "calendar");
+    if (nonCalendar.length > 0) {
+      throw { status: 400, message: "calendarDocumentIds must be calendar documents" };
+    }
+
+    const derivedDate = getCalendarTreatmentDate(validDocs);
+    if (!derivedDate) {
+      throw { status: 400, message: "No usable dates found in calendar documents" };
+    }
+
+    finalTreatmentDate = derivedDate;
+    dateSource = "calendar";
+  }
+
+  if (!finalTreatmentDate) {
+    throw {
+      status: 400,
+      message: "treatmentDate or calendarDocumentIds is required to accept a draft claim",
+    };
+  }
+
+  const documentIds = Array.from(
+    new Set([...draft.documentIds, ...calendarIds])
+  );
+
+  const updated = await updateDraftClaim(params.id!, {
+    status: "accepted",
+    illnessId,
+    doctorNotes: trimmedNotes,
+    treatmentDate: finalTreatmentDate,
+    treatmentDateSource: dateSource,
+    ...(calendarIds.length > 0 && { calendarDocumentIds: calendarIds }),
+    documentIds,
+    acceptedAt: new Date(),
+  });
+
+  if (!updated) throw { status: 404, message: "Draft claim not found" };
+  return updated;
+};
+
+routes.POST["/api/draft-claims/:id/reject"] = async (_req, _res, params) => {
+  const updated = await updateDraftClaim(params.id!, {
+    status: "rejected",
+    rejectedAt: new Date(),
+  });
+  if (!updated) throw { status: 404, message: "Draft claim not found" };
+  return updated;
+};
+
+routes.POST["/api/draft-claims/run-matching"] = async () => {
+  const drafts = await draftClaimsStorage.find(
+    (draft) => draft.status === "accepted"
+  );
+  const documentIds = Array.from(
+    new Set(drafts.flatMap((draft) => draft.documentIds))
+  );
+
+  if (documentIds.length === 0) {
+    return { created: 0, assignments: [] };
+  }
+
+  const matcher = new Matcher();
+  const assignments = await matcher.matchDocumentsByIds(documentIds);
+  return { created: assignments.length, assignments };
 };
 
 // === PROCESSING ROUTES ===
@@ -132,6 +427,16 @@ routes.POST["/api/process/match"] = async () => {
   const matcher = new Matcher();
   const assignments = await matcher.matchAllDocuments();
   return { created: assignments.length, assignments };
+};
+
+routes.POST["/api/process/calendar"] = async () => {
+  // Process only calendar events (not emails)
+  // Use DEFAULT_CALENDAR_QUERIES which includes "therapy" and other medical terms
+  const processor = new DocumentProcessor({
+    processCalendar: true,
+  });
+  const docs = await processor.processCalendarEventsFromSearch();
+  return { processed: docs.length, documents: docs };
 };
 
 routes.POST["/api/process/scrape"] = async (_req, _res, _params, body) => {
@@ -173,6 +478,7 @@ routes.GET["/api/stats"] = async () => {
   const claims = await claimsStorage.getAll();
   const documents = await documentsStorage.getAll();
   const assignments = await assignmentsStorage.getAll();
+  const draftClaims = await draftClaimsStorage.getAll();
 
   return {
     claims: claims.length,
@@ -182,6 +488,12 @@ routes.GET["/api/stats"] = async () => {
       candidates: assignments.filter((a) => a.status === "candidate").length,
       confirmed: assignments.filter((a) => a.status === "confirmed").length,
       rejected: assignments.filter((a) => a.status === "rejected").length,
+    },
+    draftClaims: {
+      total: draftClaims.length,
+      pending: draftClaims.filter((d) => d.status === "pending").length,
+      accepted: draftClaims.filter((d) => d.status === "accepted").length,
+      rejected: draftClaims.filter((d) => d.status === "rejected").length,
     },
   };
 };
@@ -336,8 +648,15 @@ export function startServer(port = PORT) {
     console.log("  GET  /api/stats");
     console.log("  GET  /api/claims");
     console.log("  GET  /api/documents");
+    console.log("  GET  /api/patients");
+    console.log("  POST /api/patients");
+    console.log("  GET  /api/illnesses");
+    console.log("  POST /api/illnesses");
+    console.log("  GET  /api/patients/:id/illnesses");
     console.log("  GET  /api/assignments");
-    console.log("  POST /api/process/documents  - Process email attachments");
+    console.log("  POST /api/assignments/:id/confirm  - Requires illnessId");
+    console.log("  GET  /api/assignments/:id/preview-accounts");
+    console.log("  POST /api/process/documents  - Process email/calendar");
     console.log("  POST /api/process/match      - Run auto-matching");
     console.log("  POST /api/process/scrape     - Scrape claims from Cigna");
   });

@@ -30,6 +30,7 @@
               jq
               curl
               git
+              caddy
             ]
             ++ lib.optionals stdenv.isLinux [
               chromedriver

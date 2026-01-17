@@ -17,9 +17,12 @@ export type {
 export type {
   Illness,
   IllnessType,
+  AccountRole,
+  RelevantAccount,
   CreateIllnessInput,
   UpdateIllnessInput,
 } from "./illness.js";
+export { ACCOUNT_ROLES } from "./illness.js";
 
 // Treatment types
 export type {
@@ -73,12 +76,14 @@ export type {
 } from "./scraped-claim.js";
 export { SCRAPED_CLAIM_STATUSES } from "./scraped-claim.js";
 
-// Medical document types (from email/attachment dumps)
+// Medical document types (from email/attachment/calendar)
 export type {
   MedicalDocument,
   DocumentSourceType,
   DocumentClassification,
   DetectedAmount,
+  CalendarAttendee,
+  CalendarOrganizer,
   CreateMedicalDocumentInput,
 } from "./medical-document.js";
 export {
@@ -86,6 +91,22 @@ export {
   DOCUMENT_CLASSIFICATIONS,
   MEDICAL_KEYWORDS,
 } from "./medical-document.js";
+
+// Draft claim types
+export type {
+  DraftClaim,
+  DraftClaimStatus,
+  DraftClaimRange,
+  DraftClaimDateSource,
+  DraftClaimPayment,
+  CreateDraftClaimInput,
+  UpdateDraftClaimInput,
+} from "./draft-claim.js";
+export {
+  DRAFT_CLAIM_STATUSES,
+  DRAFT_CLAIM_RANGES,
+  DRAFT_CLAIM_DATE_SOURCES,
+} from "./draft-claim.js";
 
 // Document-claim assignment types
 export type {

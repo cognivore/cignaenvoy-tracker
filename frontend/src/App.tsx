@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, NavLink } from 'react-router-dom';
-import { FileText, Files, GitCompare, Home } from 'lucide-react';
+import { FilePlus, FileText, Files, GitCompare, Home, Users } from 'lucide-react';
 import Claims from './pages/Claims';
+import DraftClaims from './pages/DraftClaims';
 import Documents from './pages/Documents';
 import Matches from './pages/Matches';
+import Patients from './pages/Patients';
 import { cn } from './lib/utils';
 import { api, type Stats } from './lib/api';
 
@@ -47,7 +49,9 @@ export default function App() {
         <nav className="flex-1 py-4">
           <NavItem to="/" icon={Home}>Dashboard</NavItem>
           <NavItem to="/claims" icon={FileText}>Claims</NavItem>
+          <NavItem to="/draft-claims" icon={FilePlus}>Draft Claims</NavItem>
           <NavItem to="/documents" icon={Files}>Documents</NavItem>
+          <NavItem to="/patients" icon={Users}>Patients</NavItem>
           <NavItem to="/matches" icon={GitCompare}>Match Review</NavItem>
         </nav>
 
@@ -66,7 +70,9 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/claims" element={<Claims />} />
+          <Route path="/draft-claims" element={<DraftClaims />} />
           <Route path="/documents" element={<Documents />} />
+          <Route path="/patients" element={<Patients />} />
           <Route path="/matches" element={<Matches />} />
         </Routes>
       </main>
@@ -123,6 +129,19 @@ function Dashboard() {
     }
   }
 
+  async function handleProcessCalendar() {
+    setProcessing('calendar');
+    try {
+      const result = await api.processCalendar();
+      alert(`Found ${result.processed} calendar events with medical appointments`);
+      loadStats();
+    } catch (err) {
+      alert(`Error: ${err}`);
+    } finally {
+      setProcessing(null);
+    }
+  }
+
   return (
     <div className="p-8">
       <h1 className="text-3xl font-bold mb-8 bauhaus-accent">Dashboard</h1>
@@ -156,12 +175,18 @@ function Dashboard() {
 
       <div className="bg-white border-2 border-bauhaus-black p-6">
         <h2 className="text-xl font-bold mb-4">Quick Actions</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <ActionButton
             onClick={handleProcessDocuments}
             disabled={processing !== null}
           >
             {processing === 'documents' ? 'Processing...' : 'Process Email Attachments'}
+          </ActionButton>
+          <ActionButton
+            onClick={handleProcessCalendar}
+            disabled={processing !== null}
+          >
+            {processing === 'calendar' ? 'Searching...' : 'Search Calendar Events'}
           </ActionButton>
           <ActionButton
             onClick={handleRunMatching}
