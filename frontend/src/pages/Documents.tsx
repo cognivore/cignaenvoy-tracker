@@ -122,6 +122,56 @@ export default function Documents() {
     });
   }, [documents, filter]);
 
+  const groupedDocs = useMemo(() => {
+    const filteredIds = new Set(filteredDocs.map((doc) => doc.id));
+    const emailGroups = new Map<string, MedicalDocument[]>();
+    const standalone: MedicalDocument[] = [];
+
+    for (const doc of documents) {
+      if (doc.emailId && doc.sourceType !== 'calendar') {
+        const existing = emailGroups.get(doc.emailId) ?? [];
+        existing.push(doc);
+        emailGroups.set(doc.emailId, existing);
+      } else {
+        standalone.push(doc);
+      }
+    }
+
+    const groups: Array<{ key: string; docs: MedicalDocument[] }> = [];
+
+    for (const [emailId, docs] of emailGroups.entries()) {
+      const hasFiltered = docs.some((doc) => filteredIds.has(doc.id));
+      if (!hasFiltered) continue;
+      const sorted = [...docs].sort((a, b) => {
+        const dateA = new Date(
+          (a.sourceType === 'calendar' ? a.calendarStart : a.date) ?? a.processedAt
+        ).getTime();
+        const dateB = new Date(
+          (b.sourceType === 'calendar' ? b.calendarStart : b.date) ?? b.processedAt
+        ).getTime();
+        return dateB - dateA;
+      });
+      groups.push({ key: emailId, docs: sorted });
+    }
+
+    for (const doc of standalone) {
+      if (!filteredIds.has(doc.id)) continue;
+      groups.push({ key: doc.id, docs: [doc] });
+    }
+
+    const groupDate = (docs: MedicalDocument[]) =>
+      Math.max(
+        ...docs.map((doc) =>
+          new Date(
+            (doc.sourceType === 'calendar' ? doc.calendarStart : doc.date) ?? doc.processedAt
+          ).getTime()
+        )
+      );
+
+    groups.sort((a, b) => groupDate(b.docs) - groupDate(a.docs));
+    return groups;
+  }, [documents, filteredDocs]);
+
   const classificationCounts = useMemo(() =>
     documents.reduce((acc, doc) => {
       acc[doc.classification] = (acc[doc.classification] || 0) + 1;
@@ -176,14 +226,28 @@ export default function Documents() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Documents list */}
           <div className="space-y-4">
-            {filteredDocs.map((doc) => (
-              <DocumentCard
-                key={doc.id}
-                document={doc}
-                selected={selectedDoc?.id === doc.id}
-                onClick={() => setSelectedDoc(doc)}
-              />
-            ))}
+            {groupedDocs.map((group) => {
+              if (group.docs.length > 1) {
+                return (
+                  <DocumentGroupCard
+                    key={group.key}
+                    documents={group.docs}
+                    selectedDoc={selectedDoc}
+                    onSelect={setSelectedDoc}
+                  />
+                );
+              }
+
+              const doc = group.docs[0]!;
+              return (
+                <DocumentCard
+                  key={doc.id}
+                  document={doc}
+                  selected={selectedDoc?.id === doc.id}
+                  onClick={() => setSelectedDoc(doc)}
+                />
+              );
+            })}
           </div>
 
           {/* Document detail */}
@@ -573,6 +637,112 @@ function DocumentCard({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function DocumentGroupCard({
+  documents,
+  selectedDoc,
+  onSelect,
+}: {
+  documents: MedicalDocument[];
+  selectedDoc: MedicalDocument | null;
+  onSelect: (doc: MedicalDocument) => void;
+}) {
+  const emailDoc = documents.find((doc) => doc.sourceType === 'email');
+  const attachments = documents.filter((doc) => doc.sourceType === 'attachment');
+  const primary = emailDoc ?? documents[0]!;
+  const groupSelected = documents.some((doc) => doc.id === selectedDoc?.id);
+
+  const title = primary.subject || primary.filename || 'Email';
+  const subtitle = primary.fromAddress;
+  const displayDate = primary.date ?? primary.processedAt;
+
+  return (
+    <div
+      onClick={() => onSelect(primary)}
+      className={cn(
+        'bauhaus-card cursor-pointer',
+        groupSelected && 'ring-2 ring-bauhaus-blue'
+      )}
+    >
+      <div className="flex items-start gap-4">
+        <div className={cn(
+          'w-10 h-10 flex items-center justify-center',
+          emailDoc ? 'bg-bauhaus-red' : classificationLabels[primary.classification]?.color,
+          'text-white'
+        )}>
+          {emailDoc ? <Mail size={20} /> : <FileText size={20} />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="font-medium truncate">{title}</p>
+          {subtitle && (
+            <p className="text-sm text-bauhaus-gray truncate flex items-center gap-1">
+              {subtitle}
+            </p>
+          )}
+        </div>
+        <div className="text-right">
+          {displayDate && (
+            <p className="text-xs text-bauhaus-gray">
+              {formatDate(displayDate)}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {attachments.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-bauhaus-lightgray space-y-2">
+          <p className="text-xs uppercase tracking-wide text-bauhaus-gray">
+            Attachments
+          </p>
+          {attachments.map((attachment) => {
+            const isSelected = selectedDoc?.id === attachment.id;
+            return (
+              <div
+                key={attachment.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelect(attachment);
+                }}
+                className={cn(
+                  'flex items-start justify-between gap-4 p-2 border border-bauhaus-lightgray hover:bg-bauhaus-lightgray/50',
+                  isSelected && 'bg-bauhaus-lightgray/70'
+                )}
+              >
+                <div className="min-w-0">
+                  {attachment.attachmentPath ? (
+                    <a
+                      href={getDocumentFileUrl(attachment.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium truncate block text-bauhaus-blue hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {attachment.filename || attachment.subject || 'Attachment'}
+                    </a>
+                  ) : (
+                    <p className="font-medium truncate">
+                      {attachment.filename || attachment.subject || 'Attachment'}
+                    </p>
+                  )}
+                  {attachment.detectedAmounts.length > 0 && (
+                    <p className="text-sm font-medium text-bauhaus-blue mt-1">
+                      {attachment.detectedAmounts.map(a =>
+                        formatCurrency(a.value, a.currency)
+                      ).join(', ')}
+                    </p>
+                  )}
+                </div>
+                <div className="text-right text-xs text-bauhaus-gray">
+                  {attachment.date && formatDate(attachment.date)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
