@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { FileText, Mail, Calendar, Tag, DollarSign, RefreshCw, Eye, Link2, ExternalLink, MapPin, Users, Clock, User, Edit2, Check, X } from 'lucide-react';
+import { FileText, Mail, Calendar, Tag, DollarSign, RefreshCw, Eye, ExternalLink, MapPin, Users, Clock, User, Edit2, Check, X } from 'lucide-react';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import { FilterTabs, type FilterTabItem, EmptyState as SharedEmptyState, LoadingSpinner } from '@/components';
 import { api, getDocumentFileUrl, type MedicalDocument } from '@/lib/api';
@@ -215,12 +215,18 @@ export default function Documents() {
                           >
                             <Eye size={18} />
                           </button>
-                          <button
-                            className="p-2 border hover:bg-bauhaus-lightgray transition-colors"
-                            title="Create manual match"
-                          >
-                            <Link2 size={18} />
-                          </button>
+                          {selectedDoc.attachmentPath && (
+                            <a
+                              href={getDocumentFileUrl(selectedDoc.id)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="p-2 border hover:bg-bauhaus-lightgray transition-colors"
+                              title="Open original file"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <ExternalLink size={18} />
+                            </a>
+                          )}
                         </div>
                       </div>
 

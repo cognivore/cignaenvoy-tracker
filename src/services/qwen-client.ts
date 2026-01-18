@@ -515,6 +515,14 @@ export const OCR_SUPPORTED_EXTENSIONS = new Set([
 ]);
 
 /**
+ * Version string for current OCR capabilities.
+ * Used to determine when to reprocess previously failed attachments.
+ */
+export const OCR_CAPABILITIES_VERSION = Array.from(OCR_SUPPORTED_EXTENSIONS)
+  .sort()
+  .join("|");
+
+/**
  * Check if a file can be OCR'd based on extension.
  */
 export function canOcr(filename: string): boolean {

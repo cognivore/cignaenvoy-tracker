@@ -7,116 +7,116 @@
 
 import type { MedicalDocument } from "../types/medical-document.js";
 import type {
-  DraftClaim,
-  DraftClaimPayment,
-  DraftClaimRange,
+    DraftClaim,
+    DraftClaimPayment,
+    DraftClaimRange,
 } from "../types/draft-claim.js";
 import { documentsStorage } from "../storage/documents.js";
 import { assignmentsStorage } from "../storage/assignments.js";
 import {
-  createDraftClaim,
-  draftClaimsStorage,
+    createDraftClaim,
+    draftClaimsStorage,
 } from "../storage/draft-claims.js";
 import {
-  getPrimaryPaymentSignal,
-  hasPaymentSignal,
+    getPrimaryPaymentSignal,
+    hasPaymentSignal,
 } from "./payment-signal.js";
 
 /**
  * Determine if a document is within the requested date range.
  */
 function isWithinRange(
-  document: MedicalDocument,
-  range: DraftClaimRange,
-  now: Date
+    document: MedicalDocument,
+    range: DraftClaimRange,
+    now: Date
 ): boolean {
-  if (range === "forever") return true;
-  if (!document.date) return false;
+    if (range === "forever") return true;
+    if (!document.date) return false;
 
-  const days = range === "last_week" ? 7 : 30;
-  const start = new Date(now);
-  start.setDate(start.getDate() - days);
+    const days = range === "last_week" ? 7 : 30;
+    const start = new Date(now);
+    start.setDate(start.getDate() - days);
 
-  const docDate = new Date(document.date);
-  return docDate >= start && docDate <= now;
+    const docDate = new Date(document.date);
+    return docDate >= start && docDate <= now;
 }
 
 /**
  * Convert a payment signal into a draft claim payment snapshot.
  */
 function toDraftClaimPayment(document: MedicalDocument): DraftClaimPayment | null {
-  const signal = getPrimaryPaymentSignal(document);
-  if (!signal) return null;
+    const signal = getPrimaryPaymentSignal(document);
+    if (!signal) return null;
 
-  const payment: DraftClaimPayment = {
-    amount: signal.amount,
-    currency: signal.currency,
-    confidence: signal.confidence,
-    source: signal.source,
-  };
+    const payment: DraftClaimPayment = {
+        amount: signal.amount,
+        currency: signal.currency,
+        confidence: signal.confidence,
+        source: signal.source,
+    };
 
-  if (signal.rawText !== undefined) {
-    payment.rawText = signal.rawText;
-  }
-  if (signal.context !== undefined) {
-    payment.context = signal.context;
-  }
-  if (signal.overrideNote !== undefined) {
-    payment.overrideNote = signal.overrideNote;
-  }
-  if (signal.overrideUpdatedAt !== undefined) {
-    payment.overrideUpdatedAt = signal.overrideUpdatedAt;
-  }
+    if (signal.rawText !== undefined) {
+        payment.rawText = signal.rawText;
+    }
+    if (signal.context !== undefined) {
+        payment.context = signal.context;
+    }
+    if (signal.overrideNote !== undefined) {
+        payment.overrideNote = signal.overrideNote;
+    }
+    if (signal.overrideUpdatedAt !== undefined) {
+        payment.overrideUpdatedAt = signal.overrideUpdatedAt;
+    }
 
-  return payment;
+    return payment;
 }
 
 /**
  * Generate draft claims from unattached payment documents.
  */
 export async function generateDraftClaims(
-  range: DraftClaimRange,
-  now: Date = new Date()
+    range: DraftClaimRange,
+    now: Date = new Date()
 ): Promise<DraftClaim[]> {
-  const [documents, assignments, existingDrafts] = await Promise.all([
-    documentsStorage.getAll(),
-    assignmentsStorage.getAll(),
-    draftClaimsStorage.getAll(),
-  ]);
+    const [documents, assignments, existingDrafts] = await Promise.all([
+        documentsStorage.getAll(),
+        assignmentsStorage.getAll(),
+        draftClaimsStorage.getAll(),
+    ]);
 
-  const assignedDocumentIds = new Set(
-    assignments.map((assignment) => assignment.documentId)
-  );
+    const assignedDocumentIds = new Set(
+        assignments.map((assignment) => assignment.documentId)
+    );
 
-  const draftDocumentIds = new Set(
-    existingDrafts.flatMap((draft) => draft.documentIds)
-  );
+    const draftDocumentIds = new Set(
+        existingDrafts.flatMap((draft) => draft.documentIds)
+    );
 
-  // Filter candidates: attachments with a payment signal, not already assigned or drafted
-  const candidates = documents.filter(
-    (document) =>
-      document.sourceType === "attachment" &&
-      hasPaymentSignal(document) &&
-      !assignedDocumentIds.has(document.id) &&
-      !draftDocumentIds.has(document.id) &&
-      isWithinRange(document, range, now)
-  );
+    // Filter candidates: attachments with a payment signal, not already assigned or drafted
+    const candidates = documents.filter(
+        (document) =>
+            document.sourceType === "attachment" &&
+            hasPaymentSignal(document) &&
+            !assignedDocumentIds.has(document.id) &&
+            !draftDocumentIds.has(document.id) &&
+            isWithinRange(document, range, now)
+    );
 
-  const createdDrafts: DraftClaim[] = [];
+    const createdDrafts: DraftClaim[] = [];
 
-  for (const document of candidates) {
-    const payment = toDraftClaimPayment(document);
-    if (!payment) continue;
+    for (const document of candidates) {
+        const payment = toDraftClaimPayment(document);
+        if (!payment) continue;
 
-    const draft = await createDraftClaim({
-      status: "pending",
-      primaryDocumentId: document.id,
-      documentIds: [document.id],
-      payment,
-    });
+        const draft = await createDraftClaim({
+            status: "pending",
+            primaryDocumentId: document.id,
+            documentIds: [document.id],
+            payment,
+        });
 
-    createdDrafts.push(draft);
-  }
+        createdDrafts.push(draft);
+    }
 
-  return createdDrafts;
+    return createdDrafts;
 }

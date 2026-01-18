@@ -11,6 +11,7 @@ import {
   QwenClient,
   qwenClient,
   canOcr,
+  OCR_CAPABILITIES_VERSION,
   type EmailSearchResult,
   type EmailAttachment,
   type EmailFTSSearchResponse,
@@ -330,6 +331,8 @@ const DEFAULT_CALENDAR_QUERIES = [
   "physiotherapy",
 ];
 
+const ATTACHMENT_PROCESSOR_VERSION = 2;
+
 /**
  * Document processor service.
  */
@@ -480,7 +483,10 @@ export class DocumentProcessor {
           (attachment.size !== undefined &&
             processingRecord.fileSize !== attachment.size) ||
           (processingRecord.fileSize === undefined && attachment.size !== undefined);
-        if (!sizeChanged) {
+        const versionChanged =
+          processingRecord.processorVersion !== ATTACHMENT_PROCESSOR_VERSION ||
+          processingRecord.ocrCapabilitiesVersion !== OCR_CAPABILITIES_VERSION;
+        if (!sizeChanged && !versionChanged) {
           return null;
         }
       }
@@ -497,6 +503,8 @@ export class DocumentProcessor {
         account: email.account,
         filename: attachment.filename,
         ...(attachment.size !== undefined && { fileSize: attachment.size }),
+        processorVersion: ATTACHMENT_PROCESSOR_VERSION,
+        ocrCapabilitiesVersion: OCR_CAPABILITIES_VERSION,
         status: "ocr_failed",
         ...(ocrResult.char_count !== undefined && { ocrCharCount: ocrResult.char_count }),
         ...(ocrResult.error && { lastError: String(ocrResult.error) }),
@@ -514,6 +522,8 @@ export class DocumentProcessor {
         account: email.account,
         filename: attachment.filename,
         ...(attachment.size !== undefined && { fileSize: attachment.size }),
+        processorVersion: ATTACHMENT_PROCESSOR_VERSION,
+        ocrCapabilitiesVersion: OCR_CAPABILITIES_VERSION,
         status: "non_medical",
         ocrCharCount: ocrResult.char_count ?? ocrText.length,
       });
@@ -675,7 +685,10 @@ export class DocumentProcessor {
               const sizeChanged =
                 processingRecord.fileSize === undefined ||
                 processingRecord.fileSize !== fileSize;
-              if (!sizeChanged) {
+              const versionChanged =
+                processingRecord.processorVersion !== ATTACHMENT_PROCESSOR_VERSION ||
+                processingRecord.ocrCapabilitiesVersion !== OCR_CAPABILITIES_VERSION;
+              if (!sizeChanged && !versionChanged) {
                 continue;
               }
             }
@@ -691,6 +704,8 @@ export class DocumentProcessor {
               account,
               filename,
               fileSize,
+              processorVersion: ATTACHMENT_PROCESSOR_VERSION,
+              ocrCapabilitiesVersion: OCR_CAPABILITIES_VERSION,
               status: "ocr_failed",
               ...(ocrResult.char_count !== undefined && { ocrCharCount: ocrResult.char_count }),
               ...(ocrResult.error && { lastError: String(ocrResult.error) }),
@@ -708,6 +723,8 @@ export class DocumentProcessor {
               account,
               filename,
               fileSize,
+              processorVersion: ATTACHMENT_PROCESSOR_VERSION,
+              ocrCapabilitiesVersion: OCR_CAPABILITIES_VERSION,
               status: "non_medical",
               ocrCharCount: ocrResult.char_count ?? ocrText.length,
             });

@@ -19,6 +19,10 @@ export interface AttachmentProcessingRecord {
   filename: string;
   fileSize?: number;
 
+  /** Processing version markers */
+  processorVersion?: number;
+  ocrCapabilitiesVersion?: string;
+
   /** Processing status */
   status: AttachmentProcessingStatus;
 
