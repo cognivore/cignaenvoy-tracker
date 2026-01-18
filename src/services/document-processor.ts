@@ -29,7 +29,12 @@ import {
   findDocumentByEmailId,
   findDocumentByAttachmentPath,
   findDocumentByCalendarEventId,
+  updateMedicalDocument,
 } from "../storage/documents.js";
+import {
+  findAttachmentProcessingByPath,
+  upsertAttachmentProcessingRecord,
+} from "../storage/attachment-processing.js";
 import { ensureStorageDirs } from "../storage/index.js";
 
 /**
@@ -140,95 +145,95 @@ function classifyDocument(
     keywords: string[];
     score: number;
   }> = [
-    {
-      type: "medical_bill",
-      keywords: [
-        "invoice",
-        "bill",
-        "rechnung",
-        "facture",
-        "amount due",
-        "total due",
-        "payment due",
-        "please pay",
-        "account statement",
-      ],
-      score: 0,
-    },
-    {
-      type: "receipt",
-      keywords: [
-        "receipt",
-        "quittung",
-        "paid",
-        "payment received",
-        "thank you for your payment",
-        "reçu",
-      ],
-      score: 0,
-    },
-    {
-      type: "prescription",
-      keywords: [
-        "prescription",
-        "rx",
-        "dosage",
-        "medication",
-        "drug",
-        "pharmacy",
-        "rezept",
-      ],
-      score: 0,
-    },
-    {
-      type: "lab_result",
-      keywords: [
-        "lab result",
-        "test result",
-        "blood test",
-        "analysis",
-        "laboratory",
-        "laborbefund",
-      ],
-      score: 0,
-    },
-    {
-      type: "insurance_statement",
-      keywords: [
-        "explanation of benefits",
-        "eob",
-        "claim summary",
-        "insurance statement",
-        "coverage",
-        "reimbursement",
-      ],
-      score: 0,
-    },
-    {
-      type: "appointment",
-      keywords: [
-        "appointment",
-        "termin",
-        "rendez-vous",
-        "session",
-        "visit",
-        "consultation",
-        "meeting with doctor",
-      ],
-      score: 0,
-    },
-    {
-      type: "correspondence",
-      keywords: [
-        "dear",
-        "confirmation",
-        "reminder",
-        "follow-up",
-        "referral",
-      ],
-      score: 0,
-    },
-  ];
+      {
+        type: "medical_bill",
+        keywords: [
+          "invoice",
+          "bill",
+          "rechnung",
+          "facture",
+          "amount due",
+          "total due",
+          "payment due",
+          "please pay",
+          "account statement",
+        ],
+        score: 0,
+      },
+      {
+        type: "receipt",
+        keywords: [
+          "receipt",
+          "quittung",
+          "paid",
+          "payment received",
+          "thank you for your payment",
+          "reçu",
+        ],
+        score: 0,
+      },
+      {
+        type: "prescription",
+        keywords: [
+          "prescription",
+          "rx",
+          "dosage",
+          "medication",
+          "drug",
+          "pharmacy",
+          "rezept",
+        ],
+        score: 0,
+      },
+      {
+        type: "lab_result",
+        keywords: [
+          "lab result",
+          "test result",
+          "blood test",
+          "analysis",
+          "laboratory",
+          "laborbefund",
+        ],
+        score: 0,
+      },
+      {
+        type: "insurance_statement",
+        keywords: [
+          "explanation of benefits",
+          "eob",
+          "claim summary",
+          "insurance statement",
+          "coverage",
+          "reimbursement",
+        ],
+        score: 0,
+      },
+      {
+        type: "appointment",
+        keywords: [
+          "appointment",
+          "termin",
+          "rendez-vous",
+          "session",
+          "visit",
+          "consultation",
+          "meeting with doctor",
+        ],
+        score: 0,
+      },
+      {
+        type: "correspondence",
+        keywords: [
+          "dear",
+          "confirmation",
+          "reminder",
+          "follow-up",
+          "referral",
+        ],
+        score: 0,
+      },
+    ];
 
   // Score each classification
   for (const cls of classifications) {
@@ -284,6 +289,8 @@ export interface ProcessorConfig {
   maxEmailsPerQuery?: number;
   /** Maximum calendar events to process per query */
   maxCalendarEventsPerQuery?: number;
+  /** Fetch full history per query (default: true) */
+  fullHistory?: boolean;
   /** Skip emails already processed */
   skipExisting?: boolean;
   /** Process calendar events (default: true) */
@@ -335,12 +342,20 @@ export class DocumentProcessor {
     this.config = {
       searchQueries: config.searchQueries ?? DEFAULT_SEARCH_QUERIES,
       calendarQueries: config.calendarQueries ?? DEFAULT_CALENDAR_QUERIES,
-      maxEmailsPerQuery: config.maxEmailsPerQuery ?? 1000,
-      maxCalendarEventsPerQuery: config.maxCalendarEventsPerQuery ?? 1000,
       skipExisting: config.skipExisting ?? true,
       processCalendar: config.processCalendar ?? true,
-      ...config,
+      fullHistory: config.fullHistory ?? true,
     };
+
+    if (config.accounts) {
+      this.config.accounts = config.accounts;
+    }
+    if (config.maxEmailsPerQuery !== undefined) {
+      this.config.maxEmailsPerQuery = config.maxEmailsPerQuery;
+    }
+    if (config.maxCalendarEventsPerQuery !== undefined) {
+      this.config.maxCalendarEventsPerQuery = config.maxCalendarEventsPerQuery;
+    }
 
     // Ensure storage directories exist
     ensureStorageDirs();
@@ -447,11 +462,27 @@ export class DocumentProcessor {
       return null;
     }
 
-    // Check if already processed
-    if (this.config.skipExisting) {
-      const existing = await findDocumentByAttachmentPath(attachmentPath);
-      if (existing) {
+    const existing = await findDocumentByAttachmentPath(attachmentPath);
+    if (existing) {
+      const hasOcr =
+        !!existing.ocrText &&
+        typeof existing.ocrCharCount === "number" &&
+        existing.ocrCharCount > 0;
+      if (hasOcr) {
         return existing;
+      }
+    }
+
+    if (this.config.skipExisting) {
+      const processingRecord = await findAttachmentProcessingByPath(attachmentPath);
+      if (processingRecord) {
+        const sizeChanged =
+          (attachment.size !== undefined &&
+            processingRecord.fileSize !== attachment.size) ||
+          (processingRecord.fileSize === undefined && attachment.size !== undefined);
+        if (!sizeChanged) {
+          return null;
+        }
       }
     }
 
@@ -460,6 +491,16 @@ export class DocumentProcessor {
 
     if (ocrResult.status !== "success" || !ocrResult.text) {
       console.warn(`OCR failed for ${attachment.filename}:`, ocrResult.error);
+      await upsertAttachmentProcessingRecord({
+        attachmentPath,
+        emailId: email.id,
+        account: email.account,
+        filename: attachment.filename,
+        ...(attachment.size !== undefined && { fileSize: attachment.size }),
+        status: "ocr_failed",
+        ...(ocrResult.char_count !== undefined && { ocrCharCount: ocrResult.char_count }),
+        ...(ocrResult.error && { lastError: String(ocrResult.error) }),
+      });
       return null;
     }
 
@@ -467,10 +508,19 @@ export class DocumentProcessor {
 
     // Check if content is medical-related
     if (!isMedicalRelated(ocrText, email.subject)) {
+      await upsertAttachmentProcessingRecord({
+        attachmentPath,
+        emailId: email.id,
+        account: email.account,
+        filename: attachment.filename,
+        ...(attachment.size !== undefined && { fileSize: attachment.size }),
+        status: "non_medical",
+        ocrCharCount: ocrResult.char_count ?? ocrText.length,
+      });
       return null;
     }
 
-    // Create document
+    // Create/update document
     const docInput: CreateMedicalDocumentInput = {
       sourceType: "attachment",
       emailId: email.id,
@@ -490,6 +540,10 @@ export class DocumentProcessor {
       medicalKeywords: extractMedicalKeywords(ocrText),
     };
 
+    if (existing) {
+      return updateMedicalDocument(existing.id, docInput);
+    }
+
     return createMedicalDocument(docInput);
   }
 
@@ -505,11 +559,38 @@ export class DocumentProcessor {
 
     for (const query of this.config.searchQueries ?? []) {
       try {
+        const baseOptions: { account?: string; limit?: number } = {};
+        if (this.config.accounts?.[0]) {
+          baseOptions.account = this.config.accounts[0];
+        }
+
         // Use FTS endpoint for BM25-ranked search with complete email entities
-        const searchResult = await this.client.searchEmailsFTS(query, {
-          ...(this.config.accounts?.[0] && { account: this.config.accounts[0] }),
-          limit: this.config.maxEmailsPerQuery ?? 20,
+        const initialLimit = this.config.fullHistory
+          ? 1
+          : this.config.maxEmailsPerQuery ?? 1000;
+
+        let searchResult = await this.client.searchEmailsFTS(query, {
+          ...baseOptions,
+          limit: initialLimit,
         });
+
+        const totalMatches = searchResult.total_matches ?? searchResult.count ?? 0;
+        const desiredLimit = this.config.fullHistory
+          ? (this.config.maxEmailsPerQuery
+            ? Math.min(this.config.maxEmailsPerQuery, totalMatches)
+            : totalMatches)
+          : this.config.maxEmailsPerQuery ?? 1000;
+
+        if (
+          this.config.fullHistory &&
+          totalMatches > 0 &&
+          (searchResult.results?.length ?? 0) < desiredLimit
+        ) {
+          searchResult = await this.client.searchEmailsFTS(query, {
+            ...baseOptions,
+            limit: desiredLimit,
+          });
+        }
 
         if (searchResult.status !== "success" || !searchResult.results) {
           console.warn(`Search failed for query "${query}":`, searchResult.error);
@@ -572,14 +653,31 @@ export class DocumentProcessor {
         if (!canOcr(filename)) continue;
 
         const attachmentPath = path.join(emailDir, filename);
+        const fileStats = fs.statSync(attachmentPath);
+        const fileSize = fileStats.size;
 
         try {
-          // Check if already processed
-          if (this.config.skipExisting) {
-            const existing = await findDocumentByAttachmentPath(attachmentPath);
-            if (existing) {
+          const existing = await findDocumentByAttachmentPath(attachmentPath);
+          if (existing) {
+            const hasOcr =
+              !!existing.ocrText &&
+              typeof existing.ocrCharCount === "number" &&
+              existing.ocrCharCount > 0;
+            if (hasOcr) {
               documents.push(existing);
               continue;
+            }
+          }
+
+          if (this.config.skipExisting) {
+            const processingRecord = await findAttachmentProcessingByPath(attachmentPath);
+            if (processingRecord) {
+              const sizeChanged =
+                processingRecord.fileSize === undefined ||
+                processingRecord.fileSize !== fileSize;
+              if (!sizeChanged) {
+                continue;
+              }
             }
           }
 
@@ -587,6 +685,16 @@ export class DocumentProcessor {
           const ocrResult = await this.client.ocrDocument(attachmentPath);
 
           if (ocrResult.status !== "success" || !ocrResult.text) {
+            await upsertAttachmentProcessingRecord({
+              attachmentPath,
+              emailId,
+              account,
+              filename,
+              fileSize,
+              status: "ocr_failed",
+              ...(ocrResult.char_count !== undefined && { ocrCharCount: ocrResult.char_count }),
+              ...(ocrResult.error && { lastError: String(ocrResult.error) }),
+            });
             continue;
           }
 
@@ -594,6 +702,15 @@ export class DocumentProcessor {
 
           // Only process medical-related content
           if (!isMedicalRelated(ocrText)) {
+            await upsertAttachmentProcessingRecord({
+              attachmentPath,
+              emailId,
+              account,
+              filename,
+              fileSize,
+              status: "non_medical",
+              ocrCharCount: ocrResult.char_count ?? ocrText.length,
+            });
             continue;
           }
 
@@ -610,8 +727,12 @@ export class DocumentProcessor {
             medicalKeywords: extractMedicalKeywords(ocrText),
           };
 
-          const doc = await createMedicalDocument(docInput);
-          documents.push(doc);
+          const doc = existing
+            ? await updateMedicalDocument(existing.id, docInput)
+            : await createMedicalDocument(docInput);
+          if (doc) {
+            documents.push(doc);
+          }
         } catch (err) {
           console.error(`Failed to process ${attachmentPath}:`, err);
         }
@@ -708,10 +829,37 @@ export class DocumentProcessor {
 
     for (const query of this.config.calendarQueries ?? []) {
       try {
-        const searchResult = await this.client.searchCalendarFTS(query, {
-          ...(this.config.accounts?.[0] && { account: this.config.accounts[0] }),
-          limit: this.config.maxCalendarEventsPerQuery,
+        const baseOptions: { account?: string; limit?: number } = {};
+        if (this.config.accounts?.[0]) {
+          baseOptions.account = this.config.accounts[0];
+        }
+
+        const initialLimit = this.config.fullHistory
+          ? 1
+          : this.config.maxCalendarEventsPerQuery ?? 1000;
+
+        let searchResult = await this.client.searchCalendarFTS(query, {
+          ...baseOptions,
+          limit: initialLimit,
         });
+
+        const totalMatches = searchResult.total_matches ?? searchResult.count ?? 0;
+        const desiredLimit = this.config.fullHistory
+          ? (this.config.maxCalendarEventsPerQuery
+            ? Math.min(this.config.maxCalendarEventsPerQuery, totalMatches)
+            : totalMatches)
+          : this.config.maxCalendarEventsPerQuery ?? 1000;
+
+        if (
+          this.config.fullHistory &&
+          totalMatches > 0 &&
+          (searchResult.results?.length ?? 0) < desiredLimit
+        ) {
+          searchResult = await this.client.searchCalendarFTS(query, {
+            ...baseOptions,
+            limit: desiredLimit,
+          });
+        }
 
         if (searchResult.status !== "success" || !searchResult.results) {
           console.warn(
@@ -723,7 +871,7 @@ export class DocumentProcessor {
 
         console.log(
           `[Calendar FTS] Query "${query}": ${searchResult.count ?? 0} results ` +
-            `(${searchResult.total_matches ?? 0} total matches)`
+          `(${searchResult.total_matches ?? 0} total matches)`
         );
 
         for (const event of searchResult.results) {

@@ -93,6 +93,14 @@ export {
   MEDICAL_KEYWORDS,
 } from "./medical-document.js";
 
+// Attachment processing types
+export type {
+  AttachmentProcessingRecord,
+  AttachmentProcessingStatus,
+  CreateAttachmentProcessingRecordInput,
+  UpdateAttachmentProcessingRecordInput,
+} from "./attachment-processing.js";
+
 // Draft claim types
 export type {
   DraftClaim,

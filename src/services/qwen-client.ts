@@ -501,11 +501,17 @@ export const OCR_IMAGE_EXTENSIONS = new Set([
 export const OCR_PDF_EXTENSIONS = new Set([".pdf"]);
 
 /**
+ * Supported document extensions for OCR.
+ */
+export const OCR_DOC_EXTENSIONS = new Set([".doc", ".docx"]);
+
+/**
  * All supported OCR extensions.
  */
 export const OCR_SUPPORTED_EXTENSIONS = new Set([
   ...OCR_IMAGE_EXTENSIONS,
   ...OCR_PDF_EXTENSIONS,
+  ...OCR_DOC_EXTENSIONS,
 ]);
 
 /**

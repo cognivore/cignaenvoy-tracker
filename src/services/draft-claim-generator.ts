@@ -48,16 +48,27 @@ function toDraftClaimPayment(document: MedicalDocument): DraftClaimPayment | nul
   const signal = getPrimaryPaymentSignal(document);
   if (!signal) return null;
 
-  return {
+  const payment: DraftClaimPayment = {
     amount: signal.amount,
     currency: signal.currency,
-    rawText: signal.rawText,
-    context: signal.context,
     confidence: signal.confidence,
     source: signal.source,
-    overrideNote: signal.overrideNote,
-    overrideUpdatedAt: signal.overrideUpdatedAt,
   };
+
+  if (signal.rawText !== undefined) {
+    payment.rawText = signal.rawText;
+  }
+  if (signal.context !== undefined) {
+    payment.context = signal.context;
+  }
+  if (signal.overrideNote !== undefined) {
+    payment.overrideNote = signal.overrideNote;
+  }
+  if (signal.overrideUpdatedAt !== undefined) {
+    payment.overrideUpdatedAt = signal.overrideUpdatedAt;
+  }
+
+  return payment;
 }
 
 /**

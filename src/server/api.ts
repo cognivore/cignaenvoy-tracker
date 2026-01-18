@@ -40,6 +40,10 @@ import { ensureStorageDirs } from "../storage/index.js";
 import { DocumentProcessor } from "../services/document-processor.js";
 import { generateDraftClaims } from "../services/draft-claim-generator.js";
 import { Matcher } from "../services/matcher.js";
+import {
+  runDocumentProcessing,
+  startDocumentProcessingSchedule,
+} from "../services/document-processing-runner.js";
 import { CignaScraper } from "../services/cigna-scraper.js";
 import { extractAndPrepareAccounts } from "../services/account-extractor.js";
 import type { CreatePatientInput, UpdatePatientInput } from "../types/patient.js";
@@ -236,7 +240,13 @@ routes.PUT["/api/documents/:id/payment-override"] = async (_req, _res, params, b
     httpError(400, "amount must be a non-negative number");
   }
 
-  const updated = await setPaymentOverride(params.id!, { amount, currency, note });
+  const overrideInput = {
+    amount,
+    currency,
+    ...(note !== undefined && { note }),
+  };
+
+  const updated = await setPaymentOverride(params.id!, overrideInput);
   requireEntity(updated, "Document");
   return updated;
 };
@@ -439,8 +449,7 @@ routes.POST["/api/draft-claims/run-matching"] = async () => {
 // =============================================
 
 routes.POST["/api/process/documents"] = async () => {
-  const processor = new DocumentProcessor();
-  const docs = await processor.run();
+  const docs = await runDocumentProcessing("manual");
   return { processed: docs.length, documents: docs };
 };
 
@@ -679,6 +688,9 @@ export function startServer(port = PORT) {
     console.log("  POST /api/process/match      - Run auto-matching");
     console.log("  POST /api/process/scrape     - Scrape claims from Cigna");
   });
+
+  // Background full-history scans every 3 hours
+  startDocumentProcessingSchedule();
 
   return server;
 }

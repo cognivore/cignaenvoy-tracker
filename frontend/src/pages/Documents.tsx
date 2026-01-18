@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { FileText, Mail, Calendar, Tag, DollarSign, RefreshCw, Eye, Link2, ExternalLink, MapPin, Users, Clock, User, Edit2, Check, X, Search } from 'lucide-react';
+import { FileText, Mail, Calendar, Tag, DollarSign, RefreshCw, Eye, Link2, ExternalLink, MapPin, Users, Clock, User, Edit2, Check, X } from 'lucide-react';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import { FilterTabs, type FilterTabItem, EmptyState as SharedEmptyState, LoadingSpinner } from '@/components';
 import { api, getDocumentFileUrl, type MedicalDocument } from '@/lib/api';
@@ -23,9 +23,6 @@ export default function Documents() {
   const [selectedDoc, setSelectedDoc] = useState<MedicalDocument | null>(null);
   const [filter, setFilter] = useState<string>('all');
   const [showOcr, setShowOcr] = useState(false);
-
-  // Scanning state
-  const [scanning, setScanning] = useState(false);
 
   // Override editor state
   const [editingOverride, setEditingOverride] = useState(false);
@@ -61,21 +58,6 @@ export default function Documents() {
       console.error('Failed to load documents:', err);
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function scanEmails() {
-    setScanning(true);
-    try {
-      const result = await api.processDocuments();
-      console.log(`Processed ${result.processed} documents`);
-      // Reload to show new documents
-      await loadDocuments();
-    } catch (err) {
-      console.error('Failed to scan emails:', err);
-      alert(`Scan failed: ${err}`);
-    } finally {
-      setScanning(false);
     }
   }
 
@@ -167,23 +149,13 @@ export default function Documents() {
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
         <h1 className="text-3xl font-bold bauhaus-accent">Documents</h1>
-        <div className="flex gap-2">
-          <button
-            onClick={scanEmails}
-            disabled={scanning}
-            className="flex items-center gap-2 px-4 py-2 bg-bauhaus-blue text-white font-medium hover:bg-bauhaus-blue/80 transition-colors disabled:opacity-50"
-          >
-            <Search size={18} className={scanning ? 'animate-pulse' : ''} />
-            {scanning ? 'Scanning...' : 'Scan Emails'}
-          </button>
-          <button
-            onClick={loadDocuments}
-            className="flex items-center gap-2 px-4 py-2 bg-bauhaus-black text-white font-medium hover:bg-bauhaus-gray transition-colors"
-          >
-            <RefreshCw size={18} />
-            Refresh
-          </button>
-        </div>
+        <button
+          onClick={loadDocuments}
+          className="flex items-center gap-2 px-4 py-2 bg-bauhaus-black text-white font-medium hover:bg-bauhaus-gray transition-colors"
+        >
+          <RefreshCw size={18} />
+          Refresh
+        </button>
       </div>
 
       {/* Filter tabs */}

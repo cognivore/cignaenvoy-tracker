@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, NavLink } from 'react-router-dom';
-import { FilePlus, FileText, Files, GitCompare, Home, Users } from 'lucide-react';
+import { FilePlus, FileText, Files, GitCompare, Home, Users, Shield } from 'lucide-react';
 import Claims from './pages/Claims';
 import DraftClaims from './pages/DraftClaims';
 import Documents from './pages/Documents';
 import Matches from './pages/Matches';
 import Patients from './pages/Patients';
+import Admin from './pages/Admin';
 import { cn } from './lib/utils';
 import { api, type Stats } from './lib/api';
 
@@ -53,6 +54,7 @@ export default function App() {
           <NavItem to="/documents" icon={Files}>Documents</NavItem>
           <NavItem to="/patients" icon={Users}>Patients</NavItem>
           <NavItem to="/matches" icon={GitCompare}>Match Review</NavItem>
+          <NavItem to="/admin" icon={Shield}>Admin</NavItem>
         </nav>
 
         {/* Footer */}
@@ -74,6 +76,7 @@ export default function App() {
           <Route path="/documents" element={<Documents />} />
           <Route path="/patients" element={<Patients />} />
           <Route path="/matches" element={<Matches />} />
+          <Route path="/admin" element={<Admin />} />
         </Routes>
       </main>
     </div>
@@ -83,7 +86,6 @@ export default function App() {
 function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
-  const [processing, setProcessing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -100,45 +102,6 @@ function Dashboard() {
       console.error(err);
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function handleProcessDocuments() {
-    setProcessing('documents');
-    try {
-      const result = await api.processDocuments();
-      alert(`Processed ${result.processed} documents`);
-      loadStats();
-    } catch (err) {
-      alert(`Error: ${err}`);
-    } finally {
-      setProcessing(null);
-    }
-  }
-
-  async function handleRunMatching() {
-    setProcessing('matching');
-    try {
-      const result = await api.runMatching();
-      alert(`Created ${result.created} match candidates`);
-      loadStats();
-    } catch (err) {
-      alert(`Error: ${err}`);
-    } finally {
-      setProcessing(null);
-    }
-  }
-
-  async function handleProcessCalendar() {
-    setProcessing('calendar');
-    try {
-      const result = await api.processCalendar();
-      alert(`Found ${result.processed} calendar events with medical appointments`);
-      loadStats();
-    } catch (err) {
-      alert(`Error: ${err}`);
-    } finally {
-      setProcessing(null);
     }
   }
 
@@ -173,29 +136,6 @@ function Dashboard() {
         />
       </div>
 
-      <div className="bg-white border-2 border-bauhaus-black p-6">
-        <h2 className="text-xl font-bold mb-4">Quick Actions</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <ActionButton
-            onClick={handleProcessDocuments}
-            disabled={processing !== null}
-          >
-            {processing === 'documents' ? 'Processing...' : 'Process Email Attachments'}
-          </ActionButton>
-          <ActionButton
-            onClick={handleProcessCalendar}
-            disabled={processing !== null}
-          >
-            {processing === 'calendar' ? 'Searching...' : 'Search Calendar Events'}
-          </ActionButton>
-          <ActionButton
-            onClick={handleRunMatching}
-            disabled={processing !== null}
-          >
-            {processing === 'matching' ? 'Matching...' : 'Run Auto-Matching'}
-          </ActionButton>
-        </div>
-      </div>
     </div>
   );
 }
@@ -222,25 +162,3 @@ function StatCard({ title, value, subtitle, color }: {
   );
 }
 
-function ActionButton({
-  children,
-  onClick,
-  disabled
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        "px-4 py-3 bg-bauhaus-black text-white font-medium transition-colors text-left",
-        disabled ? "opacity-50 cursor-not-allowed" : "hover:bg-bauhaus-gray"
-      )}
-    >
-      {children}
-    </button>
-  );
-}
