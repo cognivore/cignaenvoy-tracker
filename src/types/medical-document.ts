@@ -204,6 +204,15 @@ export interface MedicalDocument {
   /** Manual payment override set by user when OCR detection is incorrect */
   paymentOverride?: PaymentOverride;
 
+  /** Timestamp when this document was archived */
+  archivedAt?: Date;
+
+  /** Archive rule ID that caused this document to be archived */
+  archivedByRuleId?: string;
+
+  /** Optional archive reason (manual note or rule context) */
+  archivedReason?: string;
+
   /** Timestamp when this document was processed */
   processedAt: Date;
 }

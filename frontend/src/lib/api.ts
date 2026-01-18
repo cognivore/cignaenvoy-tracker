@@ -119,6 +119,9 @@ export interface MedicalDocument {
   calendarConferenceUrl?: string;
   // Override fields
   paymentOverride?: PaymentOverride;
+  archivedAt?: string;
+  archivedByRuleId?: string;
+  archivedReason?: string;
   processedAt: string;
 }
 
@@ -220,6 +223,30 @@ export interface Illness {
   updatedAt: string;
 }
 
+export interface ArchiveRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  fromContains?: string;
+  subjectContains?: string;
+  attachmentNameContains?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateArchiveRuleInput {
+  name: string;
+  enabled: boolean;
+  fromContains?: string;
+  subjectContains?: string;
+  attachmentNameContains?: string;
+  applyToExisting?: boolean;
+}
+
+export type UpdateArchiveRuleInput = Partial<
+  Omit<CreateArchiveRuleInput, "applyToExisting">
+>;
+
 export interface CreatePatientInput {
   cignaId: string;
   name: string;
@@ -274,6 +301,14 @@ export const api = {
   getDocuments: () => fetchJson<MedicalDocument[]>("/documents"),
   getDocument: (id: string) => fetchJson<MedicalDocument>(`/documents/${id}`),
   getMedicalBills: () => fetchJson<MedicalDocument[]>("/documents/medical-bills"),
+  setDocumentArchived: (
+    id: string,
+    input: { archived: boolean; reason?: string; ruleId?: string }
+  ) =>
+    fetchJson<MedicalDocument>(`/documents/${id}/archive`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
 
   setPaymentOverride: (
     id: string,
@@ -282,6 +317,23 @@ export const api = {
     fetchJson<MedicalDocument>(`/documents/${id}/payment-override`, {
       method: "PUT",
       body: JSON.stringify(override ? override : { clear: true }),
+    }),
+
+  // Archive rules
+  getArchiveRules: () => fetchJson<ArchiveRule[]>("/archive-rules"),
+  createArchiveRule: (input: CreateArchiveRuleInput) =>
+    fetchJson<ArchiveRule>("/archive-rules", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateArchiveRule: (id: string, updates: UpdateArchiveRuleInput) =>
+    fetchJson<ArchiveRule>(`/archive-rules/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(updates),
+    }),
+  deleteArchiveRule: (id: string) =>
+    fetchJson<{ success: boolean }>(`/archive-rules/${id}`, {
+      method: "DELETE",
     }),
 
   // Patients

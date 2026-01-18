@@ -51,9 +51,12 @@ function toDraftClaimPayment(document: MedicalDocument): DraftClaimPayment | nul
     const payment: DraftClaimPayment = {
         amount: signal.amount,
         currency: signal.currency,
-        confidence: signal.confidence,
         source: signal.source,
     };
+
+    if (signal.confidence !== undefined) {
+        payment.confidence = signal.confidence;
+    }
 
     if (signal.rawText !== undefined) {
         payment.rawText = signal.rawText;
@@ -92,10 +95,14 @@ export async function generateDraftClaims(
         existingDrafts.flatMap((draft) => draft.documentIds)
     );
 
+    const billLikeClasses = new Set(["medical_bill", "receipt"]);
+
     // Filter candidates: attachments with a payment signal, not already assigned or drafted
     const candidates = documents.filter(
         (document) =>
             document.sourceType === "attachment" &&
+            !document.archivedAt &&
+            billLikeClasses.has(document.classification) &&
             hasPaymentSignal(document) &&
             !assignedDocumentIds.has(document.id) &&
             !draftDocumentIds.has(document.id) &&

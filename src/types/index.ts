@@ -93,6 +93,13 @@ export {
   MEDICAL_KEYWORDS,
 } from "./medical-document.js";
 
+// Archive rule types
+export type {
+  ArchiveRule,
+  CreateArchiveRuleInput,
+  UpdateArchiveRuleInput,
+} from "./archive-rule.js";
+
 // Attachment processing types
 export type {
   AttachmentProcessingRecord,

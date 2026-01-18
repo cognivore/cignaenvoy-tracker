@@ -437,14 +437,16 @@ export class Matcher {
 
     // Get all documents
     const allDocuments = await documentsStorage.getAll();
+    const billLikeClasses = new Set(["medical_bill", "receipt"]);
 
     // Filter to matchable documents:
     // - Medical bills with amounts
     // - Calendar events (appointments) with dates
     const matchableDocuments = allDocuments.filter(
       (d) =>
-        (d.classification === "medical_bill" && hasPaymentSignal(d)) ||
-        (d.sourceType === "calendar" && (d.date || d.calendarStart))
+        !d.archivedAt &&
+        ((billLikeClasses.has(d.classification) && hasPaymentSignal(d)) ||
+          (d.sourceType === "calendar" && (d.date || d.calendarStart)))
     );
 
     console.log(

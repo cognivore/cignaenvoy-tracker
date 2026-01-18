@@ -22,6 +22,7 @@ export const STORAGE_DIRS = {
   illnesses: path.join(DATA_DIR, "illnesses"),
   draftClaims: path.join(DATA_DIR, "draft-claims"),
   attachmentProcessing: path.join(DATA_DIR, "attachment-processing"),
+  archiveRules: path.join(DATA_DIR, "archive-rules"),
 } as const;
 
 /**

@@ -10,7 +10,13 @@ import * as url from "node:url";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { claimsStorage } from "../storage/claims.js";
-import { documentsStorage, getMedicalBills, setPaymentOverride } from "../storage/documents.js";
+import {
+  documentsStorage,
+  getMedicalBills,
+  setPaymentOverride,
+  archiveDocument,
+  unarchiveDocument,
+} from "../storage/documents.js";
 import {
   assignmentsStorage,
   getCandidateAssignments,
@@ -22,6 +28,11 @@ import {
   draftClaimsStorage,
   updateDraftClaim,
 } from "../storage/draft-claims.js";
+import {
+  archiveRulesStorage,
+  createArchiveRule,
+  updateArchiveRule,
+} from "../storage/archive-rules.js";
 import {
   patientsStorage,
   createPatient,
@@ -40,6 +51,7 @@ import { ensureStorageDirs } from "../storage/index.js";
 import { DocumentProcessor } from "../services/document-processor.js";
 import { generateDraftClaims } from "../services/draft-claim-generator.js";
 import { Matcher } from "../services/matcher.js";
+import { applyArchiveRuleToExistingDocuments } from "../services/archive-rules.js";
 import {
   runDocumentProcessing,
   startDocumentProcessingSchedule,
@@ -50,6 +62,10 @@ import type { CreatePatientInput, UpdatePatientInput } from "../types/patient.js
 import type { CreateIllnessInput, UpdateIllnessInput } from "../types/illness.js";
 import type { DraftClaimRange, DraftClaimDateSource } from "../types/draft-claim.js";
 import type { MedicalDocument } from "../types/medical-document.js";
+import type {
+  CreateArchiveRuleInput,
+  UpdateArchiveRuleInput,
+} from "../types/archive-rule.js";
 
 const PORT = 3001;
 
@@ -249,6 +265,123 @@ routes.PUT["/api/documents/:id/payment-override"] = async (_req, _res, params, b
   const updated = await setPaymentOverride(params.id!, overrideInput);
   requireEntity(updated, "Document");
   return updated;
+};
+
+/** Archive or unarchive a document */
+routes.PUT["/api/documents/:id/archive"] = async (_req, _res, params, body) => {
+  const { archived, reason, ruleId } = body as {
+    archived?: boolean;
+    reason?: string;
+    ruleId?: string;
+  };
+
+  if (archived === undefined) {
+    httpError(400, "archived is required");
+  }
+
+  const doc = await documentsStorage.get(params.id!);
+  requireEntity(doc, "Document");
+
+  if (archived) {
+    const updated = await archiveDocument(params.id!, { reason, ruleId });
+    requireEntity(updated, "Document");
+    return updated;
+  }
+
+  const updated = await unarchiveDocument(params.id!);
+  requireEntity(updated, "Document");
+  return updated;
+};
+
+// =============================================
+// ARCHIVE RULES ROUTES
+// =============================================
+
+routes.GET["/api/archive-rules"] = async () => archiveRulesStorage.getAll();
+
+routes.POST["/api/archive-rules"] = async (_req, _res, _params, body) => {
+  const input = body as CreateArchiveRuleInput & { applyToExisting?: boolean };
+  const name = input.name?.trim();
+  if (!name) httpError(400, "name is required");
+
+  const fromContains = input.fromContains?.trim();
+  const subjectContains = input.subjectContains?.trim();
+  const attachmentNameContains = input.attachmentNameContains?.trim();
+  if (!fromContains && !subjectContains && !attachmentNameContains) {
+    httpError(400, "At least one match condition is required");
+  }
+
+  const rule = await createArchiveRule({
+    name,
+    enabled: input.enabled ?? true,
+    ...(fromContains && { fromContains }),
+    ...(subjectContains && { subjectContains }),
+    ...(attachmentNameContains && { attachmentNameContains }),
+  });
+
+  if (input.applyToExisting ?? true) {
+    await applyArchiveRuleToExistingDocuments(rule);
+  }
+
+  return rule;
+};
+
+routes.PUT["/api/archive-rules/:id"] = async (_req, _res, params, body) => {
+  const updates = body as UpdateArchiveRuleInput & { applyToExisting?: boolean };
+  const existing = await archiveRulesStorage.get(params.id!);
+  requireEntity(existing, "Archive rule");
+
+  const normalizeOptional = (value?: string | null) => {
+    if (value === undefined) return undefined;
+    if (value === null) return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+
+  const normalized: UpdateArchiveRuleInput = {
+    ...(updates.name !== undefined && { name: updates.name.trim() }),
+    ...(updates.enabled !== undefined && { enabled: updates.enabled }),
+    ...(updates.fromContains !== undefined && {
+      fromContains: normalizeOptional(updates.fromContains),
+    }),
+    ...(updates.subjectContains !== undefined && {
+      subjectContains: normalizeOptional(updates.subjectContains),
+    }),
+    ...(updates.attachmentNameContains !== undefined && {
+      attachmentNameContains: normalizeOptional(updates.attachmentNameContains),
+    }),
+  };
+
+  if (normalized.name !== undefined && !normalized.name) {
+    httpError(400, "name is required");
+  }
+
+  const proposed = {
+    ...existing,
+    ...normalized,
+  };
+
+  if (
+    !proposed.fromContains &&
+    !proposed.subjectContains &&
+    !proposed.attachmentNameContains
+  ) {
+    httpError(400, "At least one match condition is required");
+  }
+
+  const updated = await updateArchiveRule(params.id!, normalized);
+  requireEntity(updated, "Archive rule");
+
+  if (updates.applyToExisting) {
+    await applyArchiveRuleToExistingDocuments(updated);
+  }
+
+  return updated;
+};
+
+routes.DELETE["/api/archive-rules/:id"] = async (_req, _res, params) => {
+  const success = await archiveRulesStorage.delete(params.id!);
+  return { success };
 };
 
 // =============================================
@@ -676,6 +809,11 @@ export function startServer(port = PORT) {
     console.log("  GET  /api/stats");
     console.log("  GET  /api/claims");
     console.log("  GET  /api/documents");
+    console.log("  PUT  /api/documents/:id/archive");
+    console.log("  GET  /api/archive-rules");
+    console.log("  POST /api/archive-rules");
+    console.log("  PUT  /api/archive-rules/:id");
+    console.log("  DELETE /api/archive-rules/:id");
     console.log("  GET  /api/patients");
     console.log("  POST /api/patients");
     console.log("  GET  /api/illnesses");

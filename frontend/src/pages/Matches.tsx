@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Check, X, FileText, ArrowRight, RefreshCw, AlertCircle, Sparkles, ExternalLink, Plus, Calendar, Mail, Users } from 'lucide-react';
 import { cn, formatCurrency, formatDate, getScoreClass } from '@/lib/utils';
-import { FilterTabs, type FilterTabItem, LoadingSpinner } from '@/components';
+import { FilterTabs, type FilterTabItem, LoadingSpinner, UnseenDivider } from '@/components';
 import {
   api,
   getDocumentFileUrl,
@@ -13,6 +13,8 @@ import {
   type RelevantAccount,
   type CreateIllnessInput,
 } from '@/lib/api';
+import { useUnseenList } from '@/lib/useUnseenList';
+import { useUnseenDivider } from '@/lib/useUnseenDivider';
 
 interface EnrichedAssignment extends DocumentClaimAssignment {
   document?: MedicalDocument;
@@ -20,15 +22,28 @@ interface EnrichedAssignment extends DocumentClaimAssignment {
 }
 
 export default function Matches() {
-  const [assignments, setAssignments] = useState<EnrichedAssignment[]>([]);
+  const {
+    items: assignments,
+    loading,
+    unseenIds,
+    refresh: refreshAssignments,
+    markAllSeen,
+    applyLocalUpdate,
+  } = useUnseenList<DocumentClaimAssignment>({
+    fetcher: api.getAssignments,
+    cacheKey: 'matches',
+  });
+
+  const [claims, setClaims] = useState<ScrapedClaim[]>([]);
+  const [documents, setDocuments] = useState<MedicalDocument[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [illnesses, setIllnesses] = useState<Illness[]>([]);
-  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'candidate' | 'confirmed' | 'rejected' | 'all'>('candidate');
   const [selectedMatch, setSelectedMatch] = useState<EnrichedAssignment | null>(null);
   const [reviewNotes, setReviewNotes] = useState('');
   const [draftScope, setDraftScope] = useState<'all' | 'drafts'>('all');
   const [acceptedDraftDocumentIds, setAcceptedDraftDocumentIds] = useState<string[]>([]);
+  const dividerRef = useRef<HTMLDivElement | null>(null);
 
   // Illness selection state
   const [selectedPatientId, setSelectedPatientId] = useState<string>('');
@@ -45,9 +60,35 @@ export default function Matches() {
   // Matching state
   const [runningMatching, setRunningMatching] = useState(false);
 
-  useEffect(() => {
-    loadAssignments();
+  const loadReferenceData = useCallback(async () => {
+    try {
+      const [claimsList, docsList, patientsList, draftClaims] = await Promise.all([
+        api.getClaims(),
+        api.getDocuments(),
+        api.getPatients(),
+        api.getDraftClaims(),
+      ]);
+
+      setClaims(claimsList);
+      setDocuments(docsList);
+      setPatients(patientsList);
+
+      const acceptedDraftDocs = new Set(
+        draftClaims
+          .filter((draft) => draft.status === 'accepted')
+          .flatMap((draft) => draft.documentIds)
+      );
+      setAcceptedDraftDocumentIds(Array.from(acceptedDraftDocs));
+    } catch (err) {
+      console.error('Failed to load match references:', err);
+    }
   }, []);
+
+  useEffect(() => {
+    loadReferenceData();
+    const interval = setInterval(loadReferenceData, 60000);
+    return () => clearInterval(interval);
+  }, [loadReferenceData]);
 
   // Load account preview when a match is selected
   const loadAccountPreview = useCallback(async (assignmentId: string) => {
@@ -74,43 +115,32 @@ export default function Matches() {
     setShowNewIllnessForm(false);
   }, [selectedPatientId]);
 
-  async function loadAssignments() {
-    setLoading(true);
-    try {
-      const [assignmentsList, claimsList, docsList, patientsList, draftClaims] = await Promise.all([
-        api.getAssignments(),
-        api.getClaims(),
-        api.getDocuments(),
-        api.getPatients(),
-        api.getDraftClaims(),
-      ]);
-
-      // Enrich assignments with document and claim data
-      const enriched = assignmentsList.map(a => ({
-        ...a,
-        document: docsList.find(d => d.id === a.documentId),
-        claim: claimsList.find(c => c.id === a.claimId),
-      }));
-
-      setAssignments(enriched);
-      setPatients(patientsList);
-
-      const acceptedDraftDocs = new Set(
-        draftClaims
-          .filter((draft) => draft.status === 'accepted')
-          .flatMap((draft) => draft.documentIds)
-      );
-      setAcceptedDraftDocumentIds(Array.from(acceptedDraftDocs));
-    } catch (err) {
-      console.error('Failed to load assignments:', err);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (!selectedMatch) return;
+    const updated = assignments.find((assignment) => assignment.id === selectedMatch.id);
+    if (updated) {
+      const enriched: EnrichedAssignment = {
+        ...updated,
+        document: documents.find((doc) => doc.id === updated.documentId),
+        claim: claims.find((claim) => claim.id === updated.claimId),
+      };
+      setSelectedMatch(enriched);
     }
-  }
+  }, [assignments, claims, documents, selectedMatch]);
+
+  const enrichedAssignments = useMemo<EnrichedAssignment[]>(() => {
+    const docsById = new Map(documents.map((doc) => [doc.id, doc]));
+    const claimsById = new Map(claims.map((claim) => [claim.id, claim]));
+    return assignments.map((assignment) => ({
+      ...assignment,
+      document: docsById.get(assignment.documentId),
+      claim: claimsById.get(assignment.claimId),
+    }));
+  }, [assignments, claims, documents]);
 
   const scopedAssignments = draftScope === 'drafts'
-    ? assignments.filter(a => acceptedDraftDocumentIds.includes(a.documentId))
-    : assignments;
+    ? enrichedAssignments.filter(a => acceptedDraftDocumentIds.includes(a.documentId))
+    : enrichedAssignments;
 
   const filteredAssignments = useMemo(() => {
     const base = filter === 'all'
@@ -123,13 +153,30 @@ export default function Matches() {
     });
   }, [scopedAssignments, filter]);
 
+  const matchSections = useMemo(() => {
+    const unseenMatches = filteredAssignments.filter((match) => unseenIds.has(match.id));
+    const seenMatches = filteredAssignments.filter((match) => !unseenIds.has(match.id));
+    return {
+      unseenMatches,
+      seenMatches,
+      hasVisibleUnseen: unseenMatches.length > 0,
+    };
+  }, [filteredAssignments, unseenIds]);
+
+  useUnseenDivider({
+    dividerRef,
+    onSeen: markAllSeen,
+    active: matchSections.hasVisibleUnseen,
+    deps: [filteredAssignments, filter, draftScope],
+  });
+
   const counts = {
     candidate: scopedAssignments.filter(a => a.status === 'candidate').length,
     confirmed: scopedAssignments.filter(a => a.status === 'confirmed').length,
     rejected: scopedAssignments.filter(a => a.status === 'rejected').length,
   };
 
-  const draftMatchCount = assignments.filter(a =>
+  const draftMatchCount = enrichedAssignments.filter(a =>
     acceptedDraftDocumentIds.includes(a.documentId)
   ).length;
 
@@ -171,11 +218,19 @@ export default function Matches() {
 
     try {
       await api.confirmAssignment(id, selectedIllnessId, reviewNotes || undefined);
-      setAssignments(prev => prev.map(a =>
-        a.id === id
-          ? { ...a, status: 'confirmed' as const, illnessId: selectedIllnessId, confirmedAt: new Date().toISOString(), reviewNotes }
-          : a
-      ));
+      applyLocalUpdate((prev) =>
+        prev.map((a) =>
+          a.id === id
+            ? {
+                ...a,
+                status: 'confirmed' as const,
+                illnessId: selectedIllnessId,
+                confirmedAt: new Date().toISOString(),
+                reviewNotes,
+              }
+            : a
+        )
+      );
       setSelectedMatch(null);
       setReviewNotes('');
       setSelectedPatientId('');
@@ -190,11 +245,13 @@ export default function Matches() {
   async function handleReject(id: string) {
     try {
       await api.rejectAssignment(id, reviewNotes || undefined);
-      setAssignments(prev => prev.map(a =>
-        a.id === id
-          ? { ...a, status: 'rejected' as const, reviewNotes }
-          : a
-      ));
+      applyLocalUpdate((prev) =>
+        prev.map((a) =>
+          a.id === id
+            ? { ...a, status: 'rejected' as const, reviewNotes }
+            : a
+        )
+      );
       setSelectedMatch(null);
       setReviewNotes('');
       setSelectedPatientId('');
@@ -228,7 +285,7 @@ export default function Matches() {
       const result = await api.runMatching();
       console.log(`Created ${result.created} match candidates`);
       // Reload assignments to show new matches
-      await loadAssignments();
+      await Promise.all([refreshAssignments(), loadReferenceData()]);
     } catch (err) {
       console.error('Failed to run matching:', err);
       alert(`Error running matching: ${err}`);
@@ -236,6 +293,11 @@ export default function Matches() {
       setRunningMatching(false);
     }
   }
+
+  const handleRefresh = useCallback(() => {
+    refreshAssignments();
+    loadReferenceData();
+  }, [refreshAssignments, loadReferenceData]);
 
   return (
     <div className="p-8">
@@ -247,7 +309,7 @@ export default function Matches() {
           </p>
         </div>
         <button
-          onClick={loadAssignments}
+          onClick={handleRefresh}
           className="flex items-center gap-2 px-4 py-2 bg-bauhaus-black text-white font-medium hover:bg-bauhaus-gray transition-colors"
         >
           <RefreshCw size={18} />
@@ -305,7 +367,20 @@ export default function Matches() {
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           {/* Matches list */}
           <div className="space-y-4">
-            {filteredAssignments.map((match) => (
+            {matchSections.unseenMatches.map((match) => (
+              <MatchCard
+                key={match.id}
+                match={match}
+                selected={selectedMatch?.id === match.id}
+                onClick={() => handleSelectMatch(match)}
+              />
+            ))}
+            <UnseenDivider
+              ref={dividerRef}
+              visible={matchSections.hasVisibleUnseen}
+              label="Unseen"
+            />
+            {matchSections.seenMatches.map((match) => (
               <MatchCard
                 key={match.id}
                 match={match}

@@ -53,6 +53,23 @@ describe("Draft claim generator", () => {
     expect(created[0]?.primaryDocumentId).toBe(doc.id);
   });
 
+  it("creates draft claims for receipt attachments with amounts", async () => {
+    const { documents, generator } = await loadModules();
+
+    const receipt = await documents.createMedicalDocument({
+      sourceType: "attachment",
+      detectedAmounts: [createAmount(40)],
+      classification: "receipt",
+      medicalKeywords: [],
+      date: new Date("2026-01-10"),
+    });
+
+    const created = await generator.generateDraftClaims("forever", new Date("2026-01-16"));
+
+    expect(created).toHaveLength(1);
+    expect(created[0]?.primaryDocumentId).toBe(receipt.id);
+  });
+
   it("skips documents already linked to claims or draft claims", async () => {
     const { documents, assignments, drafts, generator } = await loadModules();
 
@@ -129,6 +146,23 @@ describe("Draft claim generator", () => {
 
     expect(created).toHaveLength(1);
     expect(created[0]?.primaryDocumentId).toBe(recentDoc.id);
+  });
+
+  it("skips archived documents", async () => {
+    const { documents, generator } = await loadModules();
+
+    await documents.createMedicalDocument({
+      sourceType: "attachment",
+      detectedAmounts: [createAmount(110)],
+      classification: "medical_bill",
+      medicalKeywords: [],
+      date: new Date("2026-01-10"),
+      archivedAt: new Date("2026-01-11"),
+    });
+
+    const created = await generator.generateDraftClaims("forever", new Date("2026-01-16"));
+
+    expect(created).toHaveLength(0);
   });
 
   it("prefers payment override over detected amounts", async () => {

@@ -83,6 +83,40 @@ export async function setPaymentOverride(
 }
 
 /**
+ * Archive a document (manual or rule-based).
+ */
+export async function archiveDocument(
+  id: string,
+  input?: { reason?: string; ruleId?: string }
+): Promise<MedicalDocument | null> {
+  const existing = await documentsStorage.get(id);
+  if (!existing) return null;
+
+  const updated: MedicalDocument = {
+    ...existing,
+    archivedAt: new Date(),
+    ...(input?.reason !== undefined && { archivedReason: input.reason }),
+    ...(input?.ruleId !== undefined && { archivedByRuleId: input.ruleId }),
+  };
+
+  return documentsStorage.save(updated);
+}
+
+/**
+ * Remove archive status from a document.
+ */
+export async function unarchiveDocument(
+  id: string
+): Promise<MedicalDocument | null> {
+  const existing = await documentsStorage.get(id);
+  if (!existing) return null;
+
+  const { archivedAt: _, archivedByRuleId: __, archivedReason: ___, ...rest } =
+    existing;
+  return documentsStorage.save(rest as MedicalDocument);
+}
+
+/**
  * Find document by email ID.
  */
 export async function findDocumentByEmailId(
@@ -201,9 +235,12 @@ export async function searchDocuments(
  * Get documents that look like medical bills (for matching).
  */
 export async function getMedicalBills(): Promise<MedicalDocument[]> {
+  const billLikeClasses = new Set(["medical_bill", "receipt"]);
   return documentsStorage.find(
     (d) =>
-      d.classification === "medical_bill" && hasPaymentSignal(d)
+      !d.archivedAt &&
+      billLikeClasses.has(d.classification) &&
+      hasPaymentSignal(d)
   );
 }
 

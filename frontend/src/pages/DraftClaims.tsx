@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar, Check, ExternalLink, FilePlus, FileText, RefreshCw, X } from 'lucide-react';
 import { cn, formatCurrency, formatDate, truncate } from '@/lib/utils';
-import { FilterTabs, type FilterTabItem, DetailRow, EmptyState, LoadingSpinner } from '@/components';
+import {
+  FilterTabs,
+  type FilterTabItem,
+  DetailRow,
+  EmptyState,
+  LoadingSpinner,
+  UnseenDivider,
+} from '@/components';
 import {
   api,
   getDocumentFileUrl,
@@ -12,6 +19,8 @@ import {
   type MedicalDocument,
   type Patient,
 } from '@/lib/api';
+import { useUnseenList } from '@/lib/useUnseenList';
+import { useUnseenDivider } from '@/lib/useUnseenDivider';
 
 type DraftFilter = DraftClaimStatus | 'all';
 type DateMode = 'calendar' | 'manual';
@@ -29,14 +38,27 @@ const rangeOptions: Array<{ label: string; value: DraftClaimRange }> = [
 ];
 
 export default function DraftClaims() {
-  const [drafts, setDrafts] = useState<DraftClaim[]>([]);
+  const {
+    items: drafts,
+    loading,
+    unseenIds,
+    refresh: refreshDrafts,
+    markAllSeen,
+    applyLocalUpdate,
+    upsertItem,
+  } = useUnseenList<DraftClaim>({
+    fetcher: api.getDraftClaims,
+    cacheKey: 'draft-claims',
+  });
+
   const [documents, setDocuments] = useState<MedicalDocument[]>([]);
   const [illnesses, setIllnesses] = useState<Illness[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
-  const [loading, setLoading] = useState(true);
   const [selectedDraft, setSelectedDraft] = useState<DraftClaim | null>(null);
   const [filter, setFilter] = useState<DraftFilter>('pending');
   const [processing, setProcessing] = useState<string | null>(null);
+  const dividerRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const [selectedIllnessId, setSelectedIllnessId] = useState('');
   const [doctorNotes, setDoctorNotes] = useState('');
@@ -45,28 +67,33 @@ export default function DraftClaims() {
   const [selectedCalendarIds, setSelectedCalendarIds] = useState<string[]>([]);
 
   useEffect(() => {
-    loadDrafts();
+    const loadSupportingData = async () => {
+      try {
+        const [docs, illnessesData, patientsData] = await Promise.all([
+          api.getDocuments(),
+          api.getIllnesses(),
+          api.getPatients(),
+        ]);
+        setDocuments(docs);
+        setIllnesses(illnessesData);
+        setPatients(patientsData);
+      } catch (err) {
+        console.error('Failed to load draft claim references:', err);
+      }
+    };
+
+    loadSupportingData();
+    const interval = setInterval(loadSupportingData, 60000);
+    return () => clearInterval(interval);
   }, []);
 
-  async function loadDrafts() {
-    setLoading(true);
-    try {
-      const [draftsData, docs, illnessesData, patientsData] = await Promise.all([
-        api.getDraftClaims(),
-        api.getDocuments(),
-        api.getIllnesses(),
-        api.getPatients(),
-      ]);
-      setDrafts(draftsData);
-      setDocuments(docs);
-      setIllnesses(illnessesData);
-      setPatients(patientsData);
-    } catch (err) {
-      console.error('Failed to load draft claims:', err);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (!selectedDraft) return;
+    const updated = drafts.find((draft) => draft.id === selectedDraft.id);
+    if (updated && updated !== selectedDraft) {
+      setSelectedDraft(updated);
     }
-  }
+  }, [drafts, selectedDraft]);
 
   function resetDraftForm(draft: DraftClaim | null) {
     if (!draft) {
@@ -104,6 +131,24 @@ export default function DraftClaims() {
     );
   }, [drafts, filter]);
 
+  const draftSections = useMemo(() => {
+    const unseenDrafts = filteredDrafts.filter((draft) => unseenIds.has(draft.id));
+    const seenDrafts = filteredDrafts.filter((draft) => !unseenIds.has(draft.id));
+    return {
+      unseenDrafts,
+      seenDrafts,
+      hasVisibleUnseen: unseenDrafts.length > 0,
+    };
+  }, [filteredDrafts, unseenIds]);
+
+  useUnseenDivider({
+    dividerRef,
+    onSeen: markAllSeen,
+    active: draftSections.hasVisibleUnseen,
+    deps: [filteredDrafts, filter],
+    containerRef: listRef,
+  });
+
   const counts = {
     pending: drafts.filter((draft) => draft.status === 'pending').length,
     accepted: drafts.filter((draft) => draft.status === 'accepted').length,
@@ -130,7 +175,7 @@ export default function DraftClaims() {
     setProcessing(range);
     try {
       const result = await api.generateDraftClaims(range);
-      setDrafts((prev) => [...result.drafts, ...prev]);
+      applyLocalUpdate((prev) => [...result.drafts, ...prev]);
       alert(`Generated ${result.created} draft claims`);
     } catch (err) {
       console.error('Failed to generate draft claims:', err);
@@ -170,7 +215,7 @@ export default function DraftClaims() {
         ...(dateMode === 'calendar' ? { calendarDocumentIds: selectedCalendarIds } : {}),
       });
 
-      setDrafts((prev) => prev.map((draft) => (draft.id === updated.id ? updated : draft)));
+      upsertItem(updated);
       setSelectedDraft(updated);
       resetDraftForm(updated);
     } catch (err) {
@@ -186,7 +231,7 @@ export default function DraftClaims() {
     setProcessing('reject');
     try {
       const updated = await api.rejectDraftClaim(selectedDraft.id);
-      setDrafts((prev) => prev.map((draft) => (draft.id === updated.id ? updated : draft)));
+      upsertItem(updated);
       setSelectedDraft(updated);
       resetDraftForm(updated);
     } catch (err) {
@@ -246,7 +291,7 @@ export default function DraftClaims() {
             {processing === 'matching' ? 'Matching...' : 'Run Matching'}
           </button>
           <button
-            onClick={loadDrafts}
+            onClick={refreshDrafts}
             className="flex items-center gap-2 px-4 py-2 border-2 border-bauhaus-black font-medium hover:bg-bauhaus-lightgray transition-colors"
           >
             <RefreshCw size={18} />
@@ -271,8 +316,28 @@ export default function DraftClaims() {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Draft list */}
-          <div className="space-y-4 max-h-[calc(100vh-280px)] overflow-auto pr-2">
-            {filteredDrafts.map((draft) => (
+          <div
+            ref={listRef}
+            className="space-y-4 max-h-[calc(100vh-280px)] overflow-auto pr-2"
+          >
+            {draftSections.unseenDrafts.map((draft) => (
+              <DraftCard
+                key={draft.id}
+                draft={draft}
+                document={documents.find((doc) => doc.id === draft.primaryDocumentId)}
+                selected={selectedDraft?.id === draft.id}
+                onClick={() => {
+                  setSelectedDraft(draft);
+                  resetDraftForm(draft);
+                }}
+              />
+            ))}
+            <UnseenDivider
+              ref={dividerRef}
+              visible={draftSections.hasVisibleUnseen}
+              label="Unseen"
+            />
+            {draftSections.seenDrafts.map((draft) => (
               <DraftCard
                 key={draft.id}
                 draft={draft}

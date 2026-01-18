@@ -27,6 +27,7 @@ import type {
 import { MEDICAL_KEYWORDS } from "../types/medical-document.js";
 import {
   createMedicalDocument,
+  archiveDocument,
   findDocumentByEmailId,
   findDocumentByAttachmentPath,
   findDocumentByCalendarEventId,
@@ -37,6 +38,7 @@ import {
   upsertAttachmentProcessingRecord,
 } from "../storage/attachment-processing.js";
 import { ensureStorageDirs } from "../storage/index.js";
+import { buildArchiveReason, findMatchingArchiveRule } from "./archive-rules.js";
 
 /**
  * Amount extraction patterns.
@@ -372,7 +374,45 @@ export class DocumentProcessor {
 
     // Check if email body is medical-related
     const emailText = `${email.subject} ${email.body ?? email.snippet}`;
-    if (isMedicalRelated(emailText)) {
+    const archiveRule = await findMatchingArchiveRule({
+      fromAddress: email.from,
+      subject: email.subject,
+    });
+
+    if (archiveRule) {
+      const existing = this.config.skipExisting
+        ? await findDocumentByEmailId(email.id)
+        : null;
+
+      if (existing) {
+        const archived = await archiveDocument(existing.id, {
+          reason: buildArchiveReason(archiveRule),
+          ruleId: archiveRule.id,
+        });
+        documents.push(archived ?? existing);
+      } else {
+        const emailDoc: CreateMedicalDocumentInput = {
+          sourceType: "email",
+          emailId: email.id,
+          account: email.account,
+          subject: email.subject,
+          fromAddress: email.from,
+          toAddress: email.to,
+          bodySnippet: email.snippet,
+          date: new Date(email.date),
+          ocrText: email.body ?? email.snippet,
+          ocrCharCount: (email.body ?? email.snippet).length,
+          detectedAmounts: [],
+          classification: "unknown",
+          medicalKeywords: [],
+          archivedAt: new Date(),
+          archivedByRuleId: archiveRule.id,
+          archivedReason: buildArchiveReason(archiveRule),
+        };
+        const doc = await createMedicalDocument(emailDoc);
+        documents.push(doc);
+      }
+    } else if (isMedicalRelated(emailText)) {
       // Check if already processed - only skip the email body, NOT attachments
       if (this.config.skipExisting) {
         const existing = await findDocumentByEmailId(email.id);
@@ -440,11 +480,6 @@ export class DocumentProcessor {
     email: EmailSearchResult,
     attachment: EmailAttachment
   ): Promise<MedicalDocument | null> {
-    // Check if file can be OCR'd
-    if (!canOcr(attachment.filename)) {
-      return null;
-    }
-
     // Get attachment path
     const attachmentPath =
       attachment.path ??
@@ -459,9 +494,53 @@ export class DocumentProcessor {
         attachment.filename
       );
 
+    const archiveRule = await findMatchingArchiveRule({
+      fromAddress: email.from,
+      subject: email.subject,
+      attachmentName: attachment.filename,
+    });
+
     // Check if file exists
     if (!fs.existsSync(attachmentPath)) {
       console.warn(`Attachment not found: ${attachmentPath}`);
+      return null;
+    }
+
+    if (archiveRule) {
+      const existing = await findDocumentByAttachmentPath(attachmentPath);
+      if (existing) {
+        const archived = await archiveDocument(existing.id, {
+          reason: buildArchiveReason(archiveRule),
+          ruleId: archiveRule.id,
+        });
+        return archived ?? existing;
+      }
+
+      const archivedDoc: CreateMedicalDocumentInput = {
+        sourceType: "attachment",
+        emailId: email.id,
+        account: email.account,
+        attachmentPath,
+        filename: attachment.filename,
+        mimeType: attachment.mime_type,
+        fileSize: attachment.size,
+        subject: email.subject,
+        fromAddress: email.from,
+        toAddress: email.to,
+        date: new Date(email.date),
+        detectedAmounts: [],
+        classification: "unknown",
+        medicalKeywords: [],
+        archivedAt: new Date(),
+        archivedByRuleId: archiveRule.id,
+        archivedReason: buildArchiveReason(archiveRule),
+      };
+
+      return createMedicalDocument(archivedDoc);
+    }
+
+    // Check if file can be OCR'd
+    if (!canOcr(attachment.filename)) {
       return null;
     }
 

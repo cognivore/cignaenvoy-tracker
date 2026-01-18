@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   User,
   Plus,
@@ -11,7 +11,7 @@ import {
   Edit
 } from 'lucide-react';
 import { cn, formatDate } from '@/lib/utils';
-import { LoadingSpinner } from '@/components';
+import { LoadingSpinner, UnseenDivider } from '@/components';
 import {
   api,
   type Patient,
@@ -19,16 +19,30 @@ import {
   type CreatePatientInput,
   type CreateIllnessInput
 } from '@/lib/api';
+import { useUnseenList } from '@/lib/useUnseenList';
+import { useUnseenDivider } from '@/lib/useUnseenDivider';
 
 type RelationshipType = 'Employee' | 'Member' | 'Beneficiary';
 type IllnessType = 'acute' | 'chronic';
 
 export default function Patients() {
-  const [patients, setPatients] = useState<Patient[]>([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    items: patients,
+    loading,
+    unseenIds,
+    refresh: refreshPatients,
+    markAllSeen,
+    applyLocalUpdate,
+    upsertItem,
+  } = useUnseenList<Patient>({
+    fetcher: api.getPatients,
+    cacheKey: 'patients',
+  });
+
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [patientIllnesses, setPatientIllnesses] = useState<Illness[]>([]);
   const [loadingIllnesses, setLoadingIllnesses] = useState(false);
+  const dividerRef = useRef<HTMLDivElement | null>(null);
 
   // Forms
   const [showPatientForm, setShowPatientForm] = useState(false);
@@ -39,10 +53,6 @@ export default function Patients() {
   const [selectedIllness, setSelectedIllness] = useState<Illness | null>(null);
 
   useEffect(() => {
-    loadPatients();
-  }, []);
-
-  useEffect(() => {
     if (selectedPatient) {
       loadPatientIllnesses(selectedPatient.id);
     } else {
@@ -51,17 +61,13 @@ export default function Patients() {
     }
   }, [selectedPatient]);
 
-  async function loadPatients() {
-    setLoading(true);
-    try {
-      const data = await api.getPatients();
-      setPatients(data);
-    } catch (err) {
-      console.error('Failed to load patients:', err);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (!selectedPatient) return;
+    const updated = patients.find((patient) => patient.id === selectedPatient.id);
+    if (updated && updated !== selectedPatient) {
+      setSelectedPatient(updated);
     }
-  }
+  }, [patients, selectedPatient]);
 
   async function loadPatientIllnesses(patientId: string) {
     setLoadingIllnesses(true);
@@ -78,7 +84,7 @@ export default function Patients() {
   async function handleCreatePatient(input: CreatePatientInput) {
     try {
       const newPatient = await api.createPatient(input);
-      setPatients([...patients, newPatient]);
+      applyLocalUpdate((prev) => [...prev, newPatient]);
       setShowPatientForm(false);
       setSelectedPatient(newPatient);
     } catch (err) {
@@ -90,7 +96,7 @@ export default function Patients() {
   async function handleUpdatePatient(id: string, updates: Partial<CreatePatientInput>) {
     try {
       const updated = await api.updatePatient(id, updates);
-      setPatients(patients.map(p => p.id === id ? updated : p));
+      upsertItem(updated);
       setEditingPatient(null);
       if (selectedPatient?.id === id) {
         setSelectedPatient(updated);
@@ -123,6 +129,23 @@ export default function Patients() {
     acute: 'bg-bauhaus-yellow/10 text-bauhaus-black border border-bauhaus-yellow',
   };
 
+  const patientSections = useMemo(() => {
+    const unseenPatients = patients.filter((patient) => unseenIds.has(patient.id));
+    const seenPatients = patients.filter((patient) => !unseenIds.has(patient.id));
+    return {
+      unseenPatients,
+      seenPatients,
+      hasVisibleUnseen: unseenPatients.length > 0,
+    };
+  }, [patients, unseenIds]);
+
+  useUnseenDivider({
+    dividerRef,
+    onSeen: markAllSeen,
+    active: patientSections.hasVisibleUnseen,
+    deps: [patients],
+  });
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
@@ -139,7 +162,7 @@ export default function Patients() {
             Add Patient
           </button>
           <button
-            onClick={loadPatients}
+            onClick={refreshPatients}
             className="flex items-center gap-2 px-4 py-2 bg-bauhaus-black text-white font-medium hover:bg-bauhaus-gray transition-colors"
           >
             <RefreshCw size={18} />
@@ -160,7 +183,52 @@ export default function Patients() {
               <User size={20} />
               Patients ({patients.length})
             </h2>
-            {patients.map((patient) => (
+            {patientSections.unseenPatients.map((patient) => (
+              <div
+                key={patient.id}
+                onClick={() => {
+                  setSelectedPatient(patient);
+                  setSelectedIllness(null);
+                }}
+                className={cn(
+                  'bauhaus-card cursor-pointer transition-all',
+                  selectedPatient?.id === patient.id && 'ring-2 ring-bauhaus-blue'
+                )}
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <span className={cn(
+                    'inline-block px-2 py-1 text-xs font-medium',
+                    relationshipColors[patient.relationship]
+                  )}>
+                    {patient.relationship}
+                  </span>
+                  <span className="text-xs text-bauhaus-gray">
+                    ID: {patient.cignaId}
+                  </span>
+                </div>
+                <h3 className="font-bold text-lg mb-2">{patient.name}</h3>
+                <div className="space-y-1 text-sm text-bauhaus-gray">
+                  {patient.dateOfBirth && (
+                    <div className="flex items-center gap-2">
+                      <Calendar size={14} />
+                      <span>Born {formatDate(patient.dateOfBirth)}</span>
+                    </div>
+                  )}
+                  {patient.email && (
+                    <div className="flex items-center gap-2">
+                      <Mail size={14} />
+                      <span>{patient.email}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+            <UnseenDivider
+              ref={dividerRef}
+              visible={patientSections.hasVisibleUnseen}
+              label="Unseen"
+            />
+            {patientSections.seenPatients.map((patient) => (
               <div
                 key={patient.id}
                 onClick={() => {
