@@ -124,6 +124,9 @@ export interface DraftClaim {
 
   /** Timestamp when draft was rejected */
   rejectedAt?: Date;
+
+  /** Timestamp when draft was archived (if archived) */
+  archivedAt?: Date;
 }
 
 /**

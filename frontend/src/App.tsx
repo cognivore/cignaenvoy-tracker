@@ -1,32 +1,85 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, NavLink } from 'react-router-dom';
-import { FilePlus, FileText, Files, GitCompare, Home, Users, Shield } from 'lucide-react';
+import { Routes, Route, NavLink, useLocation } from 'react-router-dom';
+import { FilePlus, FileText, Files, GitCompare, Home, Users, Shield, Archive, ChevronDown, ChevronRight, Heart } from 'lucide-react';
 import Claims from './pages/Claims';
 import DraftClaims from './pages/DraftClaims';
 import Documents from './pages/Documents';
 import Matches from './pages/Matches';
 import Patients from './pages/Patients';
 import Admin from './pages/Admin';
+import ArchivedDocuments from './pages/archive/Documents';
+import ArchivedClaims from './pages/archive/Claims';
+import ArchivedDraftClaims from './pages/archive/DraftClaims';
+import ArchivedPatients from './pages/archive/Patients';
+import ArchivedIllnesses from './pages/archive/Illnesses';
 import { cn } from './lib/utils';
 import { api, type Stats } from './lib/api';
 
-function NavItem({ to, icon: Icon, children }: { to: string; icon: React.ElementType; children: React.ReactNode }) {
+function NavItem({ to, icon: Icon, children, indent = false }: { to: string; icon: React.ElementType; children: React.ReactNode; indent?: boolean }) {
   return (
     <NavLink
       to={to}
       className={({ isActive }) =>
         cn(
-          'flex items-center gap-3 px-4 py-3 font-medium transition-colors',
+          'flex items-center gap-3 py-3 font-medium transition-colors',
           'border-l-4',
+          indent ? 'px-8' : 'px-4',
           isActive
             ? 'bg-bauhaus-blue text-white border-bauhaus-yellow'
             : 'text-bauhaus-gray hover:bg-bauhaus-lightgray border-transparent'
         )
       }
     >
-      <Icon size={20} />
+      <Icon size={indent ? 16 : 20} />
       {children}
     </NavLink>
+  );
+}
+
+function NavSection({ 
+  icon: Icon, 
+  label, 
+  children, 
+  basePath 
+}: { 
+  icon: React.ElementType; 
+  label: string; 
+  children: React.ReactNode;
+  basePath: string;
+}) {
+  const location = useLocation();
+  const isChildActive = location.pathname.startsWith(basePath);
+  const [isOpen, setIsOpen] = useState(isChildActive);
+
+  // Auto-expand when navigating to child route
+  useEffect(() => {
+    if (isChildActive && !isOpen) {
+      setIsOpen(true);
+    }
+  }, [isChildActive, isOpen]);
+
+  return (
+    <div>
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className={cn(
+          'w-full flex items-center gap-3 px-4 py-3 font-medium transition-colors',
+          'border-l-4',
+          isChildActive
+            ? 'bg-bauhaus-blue/20 text-bauhaus-black border-bauhaus-yellow'
+            : 'text-bauhaus-gray hover:bg-bauhaus-lightgray border-transparent'
+        )}
+      >
+        <Icon size={20} />
+        <span className="flex-1 text-left">{label}</span>
+        {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+      </button>
+      {isOpen && (
+        <div className="bg-bauhaus-lightgray/50">
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -47,7 +100,7 @@ export default function App() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 py-4">
+        <nav className="flex-1 py-4 overflow-y-auto">
           <NavItem to="/" icon={Home}>Dashboard</NavItem>
           <NavItem to="/claims" icon={FileText}>Claims</NavItem>
           <NavItem to="/draft-claims" icon={FilePlus}>Draft Claims</NavItem>
@@ -55,6 +108,14 @@ export default function App() {
           <NavItem to="/patients" icon={Users}>Patients</NavItem>
           <NavItem to="/matches" icon={GitCompare}>Match Review</NavItem>
           <NavItem to="/admin" icon={Shield}>Admin</NavItem>
+          
+          <NavSection icon={Archive} label="Archive" basePath="/archive">
+            <NavItem to="/archive/documents" icon={Files} indent>Documents</NavItem>
+            <NavItem to="/archive/claims" icon={FileText} indent>Claims</NavItem>
+            <NavItem to="/archive/draft-claims" icon={FilePlus} indent>Draft Claims</NavItem>
+            <NavItem to="/archive/patients" icon={Users} indent>Patients</NavItem>
+            <NavItem to="/archive/illnesses" icon={Heart} indent>Illnesses</NavItem>
+          </NavSection>
         </nav>
 
         {/* Footer */}
@@ -77,6 +138,12 @@ export default function App() {
           <Route path="/patients" element={<Patients />} />
           <Route path="/matches" element={<Matches />} />
           <Route path="/admin" element={<Admin />} />
+          {/* Archive routes */}
+          <Route path="/archive/documents" element={<ArchivedDocuments />} />
+          <Route path="/archive/claims" element={<ArchivedClaims />} />
+          <Route path="/archive/draft-claims" element={<ArchivedDraftClaims />} />
+          <Route path="/archive/patients" element={<ArchivedPatients />} />
+          <Route path="/archive/illnesses" element={<ArchivedIllnesses />} />
         </Routes>
       </main>
     </div>

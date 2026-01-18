@@ -109,6 +109,9 @@ export interface ScrapedClaim {
 
   /** Timestamp when this claim was scraped */
   scrapedAt: Date;
+
+  /** Timestamp when this claim was archived (if archived) */
+  archivedAt?: Date;
 }
 
 /**

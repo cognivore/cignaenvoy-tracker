@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { Calendar, DollarSign, User, FileText, RefreshCw } from 'lucide-react';
+import { Calendar, DollarSign, User, FileText, RefreshCw, Archive } from 'lucide-react';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import { DetailRow, EmptyState, LoadingSpinner, UnseenDivider } from '@/components';
 import { api, type ScrapedClaim } from '@/lib/api';
@@ -14,13 +14,33 @@ export default function Claims() {
     hasUnseen,
     refresh: refreshClaims,
     markAllSeen,
+    removeItem,
   } = useUnseenList<ScrapedClaim>({
-    fetcher: api.getClaims,
+    fetcher: async () => {
+      const all = await api.getClaims();
+      return all.filter((claim) => !claim.archivedAt);
+    },
     cacheKey: 'claims',
   });
 
   const [selectedClaim, setSelectedClaim] = useState<ScrapedClaim | null>(null);
+  const [archiving, setArchiving] = useState(false);
   const dividerRef = useRef<HTMLDivElement | null>(null);
+
+  async function handleArchive() {
+    if (!selectedClaim) return;
+    setArchiving(true);
+    try {
+      await api.setClaimArchived(selectedClaim.id, true);
+      removeItem(selectedClaim.id);
+      setSelectedClaim(null);
+    } catch (err) {
+      console.error('Failed to archive claim:', err);
+      alert(`Error: ${err}`);
+    } finally {
+      setArchiving(false);
+    }
+  }
 
   useEffect(() => {
     if (!selectedClaim) return;
@@ -144,7 +164,20 @@ export default function Claims() {
           {/* Claim detail */}
           {selectedClaim && (
             <div className="bauhaus-card h-fit sticky top-8">
-              <h2 className="text-xl font-bold mb-4">Claim #{selectedClaim.cignaClaimNumber}</h2>
+              <div className="flex items-start justify-between mb-4">
+                <h2 className="text-xl font-bold">Claim #{selectedClaim.cignaClaimNumber}</h2>
+                <button
+                  onClick={handleArchive}
+                  disabled={archiving}
+                  className={cn(
+                    'p-2 border border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray transition-colors',
+                    archiving && 'opacity-60 cursor-not-allowed'
+                  )}
+                  title="Archive"
+                >
+                  <Archive size={18} />
+                </button>
+              </div>
 
               <div className="space-y-1 mb-6">
                 <DetailRow label="Submission #" value={selectedClaim.submissionNumber} />

@@ -98,3 +98,36 @@ export async function getOrCreatePatient(
   if (existing) return existing;
   return createPatient(input);
 }
+
+/**
+ * Archive a patient.
+ */
+export async function archivePatient(id: string): Promise<Patient | null> {
+  return updatePatient(id, { archivedAt: new Date() });
+}
+
+/**
+ * Unarchive a patient.
+ */
+export async function unarchivePatient(id: string): Promise<Patient | null> {
+  const existing = await patientsStorage.get(id);
+  if (!existing) return null;
+
+  const { archivedAt: _, ...rest } = existing;
+  const updated: Patient = { ...rest, updatedAt: new Date() };
+  return patientsStorage.save(updated);
+}
+
+/**
+ * Get all archived patients.
+ */
+export async function getArchivedPatients(): Promise<Patient[]> {
+  return patientsStorage.find((p) => !!p.archivedAt);
+}
+
+/**
+ * Get all non-archived patients.
+ */
+export async function getActivePatients(): Promise<Patient[]> {
+  return patientsStorage.find((p) => !p.archivedAt);
+}

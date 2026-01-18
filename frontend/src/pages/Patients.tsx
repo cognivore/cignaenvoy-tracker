@@ -8,7 +8,8 @@ import {
   Heart,
   ChevronRight,
   X,
-  Edit
+  Edit,
+  Archive
 } from 'lucide-react';
 import { cn, formatDate } from '@/lib/utils';
 import { LoadingSpinner, UnseenDivider } from '@/components';
@@ -34,10 +35,15 @@ export default function Patients() {
     markAllSeen,
     applyLocalUpdate,
     upsertItem,
+    removeItem,
   } = useUnseenList<Patient>({
-    fetcher: api.getPatients,
+    fetcher: async () => {
+      const all = await api.getPatients();
+      return all.filter((patient) => !patient.archivedAt);
+    },
     cacheKey: 'patients',
   });
+  const [archiving, setArchiving] = useState(false);
 
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [patientIllnesses, setPatientIllnesses] = useState<Illness[]>([]);
@@ -115,6 +121,21 @@ export default function Patients() {
     } catch (err) {
       console.error('Failed to create illness:', err);
       alert(`Error: ${err}`);
+    }
+  }
+
+  async function handleArchivePatient() {
+    if (!selectedPatient) return;
+    setArchiving(true);
+    try {
+      await api.setPatientArchived(selectedPatient.id, true);
+      removeItem(selectedPatient.id);
+      setSelectedPatient(null);
+    } catch (err) {
+      console.error('Failed to archive patient:', err);
+      alert(`Error: ${err}`);
+    } finally {
+      setArchiving(false);
     }
   }
 
@@ -277,12 +298,25 @@ export default function Patients() {
               <div className="bauhaus-card">
                 <div className="flex items-start justify-between mb-4">
                   <h2 className="text-xl font-bold">{selectedPatient.name}</h2>
-                  <button
-                    onClick={() => setEditingPatient(selectedPatient)}
-                    className="p-2 text-bauhaus-gray hover:text-bauhaus-black transition-colors"
-                  >
-                    <Edit size={18} />
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setEditingPatient(selectedPatient)}
+                      className="p-2 text-bauhaus-gray hover:text-bauhaus-black transition-colors"
+                    >
+                      <Edit size={18} />
+                    </button>
+                    <button
+                      onClick={handleArchivePatient}
+                      disabled={archiving}
+                      className={cn(
+                        'p-2 border border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray transition-colors',
+                        archiving && 'opacity-60 cursor-not-allowed'
+                      )}
+                      title="Archive"
+                    >
+                      <Archive size={18} />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4 mb-6">

@@ -262,16 +262,14 @@ export default function Documents() {
   }
 
   const filteredDocs = useMemo(() => {
+    // Always filter out archived documents - they appear in the Archive section
     const activeDocuments = documents.filter((doc) => !doc.archivedAt);
-    const archivedDocuments = documents.filter((doc) => doc.archivedAt);
 
-    const base = filter === 'archived'
-      ? archivedDocuments
-      : filter === 'all'
-        ? activeDocuments
-        : filter === 'calendar'
-          ? activeDocuments.filter(d => d.sourceType === 'calendar')
-          : activeDocuments.filter(d => d.classification === filter);
+    const base = filter === 'all'
+      ? activeDocuments
+      : filter === 'calendar'
+        ? activeDocuments.filter(d => d.sourceType === 'calendar')
+        : activeDocuments.filter(d => d.classification === filter);
 
     // Sort by date descending (most recent first)
     return [...base].sort((a, b) => {
@@ -283,11 +281,13 @@ export default function Documents() {
 
   const groupedDocs = useMemo(() => {
     const filteredIds = new Set(filteredDocs.map((doc) => doc.id));
-    const restrictToFiltered = filter === 'archived';
     const emailGroups = new Map<string, MedicalDocument[]>();
     const standalone: MedicalDocument[] = [];
 
-    for (const doc of documents) {
+    // Only consider non-archived documents
+    const activeDocuments = documents.filter((doc) => !doc.archivedAt);
+
+    for (const doc of activeDocuments) {
       if (doc.emailId && doc.sourceType !== 'calendar') {
         const existing = emailGroups.get(doc.emailId) ?? [];
         existing.push(doc);
@@ -300,9 +300,7 @@ export default function Documents() {
     const groups: Array<{ key: string; docs: MedicalDocument[] }> = [];
 
     for (const [emailId, docs] of emailGroups.entries()) {
-      const visibleDocs = restrictToFiltered
-        ? docs.filter((doc) => filteredIds.has(doc.id))
-        : docs;
+      const visibleDocs = docs.filter((doc) => filteredIds.has(doc.id));
       if (visibleDocs.length === 0) continue;
       const sorted = [...visibleDocs].sort((a, b) => {
         const dateA = new Date(
@@ -332,7 +330,7 @@ export default function Documents() {
 
     groups.sort((a, b) => groupDate(b.docs) - groupDate(a.docs));
     return groups;
-  }, [documents, filteredDocs, filter]);
+  }, [documents, filteredDocs]);
 
   const groupedSections = useMemo(() => {
     const unseenGroups = groupedDocs.filter((group) =>
@@ -360,11 +358,6 @@ export default function Documents() {
     [documents]
   );
 
-  const archivedDocuments = useMemo(
-    () => documents.filter((doc) => doc.archivedAt),
-    [documents]
-  );
-
   const classificationCounts = useMemo(() =>
     activeDocuments.reduce((acc, doc) => {
       acc[doc.classification] = (acc[doc.classification] || 0) + 1;
@@ -386,8 +379,7 @@ export default function Documents() {
       label,
       count: classificationCounts[key] || 0,
     })),
-    { key: 'archived', label: 'Archived', count: archivedDocuments.length },
-  ], [activeDocuments.length, calendarCount, classificationCounts, archivedDocuments.length]);
+  ], [activeDocuments.length, calendarCount, classificationCounts]);
 
   return (
     <div className="p-8">
@@ -485,19 +477,12 @@ export default function Documents() {
                   <>
                     <div className="sticky top-0 bg-white z-10 pb-3 border-b border-bauhaus-lightgray">
                       <div className="flex items-start justify-between mb-4">
-                        <div className="flex items-center gap-2">
-                          <span className={cn(
-                            'inline-block px-2 py-1 text-xs font-medium uppercase text-white',
-                            classificationLabels[selectedDoc.classification]?.color
-                          )}>
-                            {classificationLabels[selectedDoc.classification]?.label}
-                          </span>
-                          {selectedDoc.archivedAt && (
-                            <span className="inline-block px-2 py-1 text-xs font-medium uppercase bg-bauhaus-gray text-white">
-                              Archived
-                            </span>
-                          )}
-                        </div>
+                        <span className={cn(
+                          'inline-block px-2 py-1 text-xs font-medium uppercase text-white',
+                          classificationLabels[selectedDoc.classification]?.color
+                        )}>
+                          {classificationLabels[selectedDoc.classification]?.label}
+                        </span>
                         <div className="flex gap-2">
                           <button
                             onClick={() => setShowOcr(!showOcr)}
@@ -513,15 +498,12 @@ export default function Documents() {
                             onClick={handleArchiveToggle}
                             disabled={archiving}
                             className={cn(
-                              'p-2 border transition-colors',
-                              selectedDoc.archivedAt
-                                ? 'border-bauhaus-blue text-bauhaus-blue hover:bg-bauhaus-lightgray'
-                                : 'border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray',
+                              'p-2 border border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray transition-colors',
                               archiving && 'opacity-60 cursor-not-allowed'
                             )}
-                            title={selectedDoc.archivedAt ? 'Unarchive' : 'Archive'}
+                            title="Archive"
                           >
-                            {selectedDoc.archivedAt ? <Inbox size={18} /> : <Archive size={18} />}
+                            <Archive size={18} />
                           </button>
                           {selectedDoc.attachmentPath && (
                             <a
@@ -562,18 +544,6 @@ export default function Documents() {
                       )}
                       {selectedDoc.date && (
                         <DetailRow icon={Calendar} label="Date" value={formatDate(selectedDoc.date)} />
-                      )}
-                      {selectedDoc.archivedAt && (
-                        <DetailRow
-                          icon={Archive}
-                          label="Archived"
-                          value={[
-                            formatDate(selectedDoc.archivedAt),
-                            selectedDoc.archivedReason,
-                          ]
-                            .filter(Boolean)
-                            .join(' • ')}
-                        />
                       )}
                       {selectedDoc.sourceType === 'attachment' && selectedDoc.filename && (
                         <DetailRow icon={FileText} label="File" value={selectedDoc.filename} />
@@ -942,7 +912,6 @@ function DocumentCard({
   onClick: () => void;
 }) {
   const isCalendar = document.sourceType === 'calendar';
-  const isArchived = !!document.archivedAt;
   const typeIcon = isCalendar ? Calendar : document.sourceType === 'email' ? Mail : FileText;
   const Icon = typeIcon;
   const hasFile = !!document.attachmentPath;
@@ -966,8 +935,7 @@ function DocumentCard({
       className={cn(
         'bauhaus-card cursor-pointer',
         selected && 'ring-2 ring-bauhaus-blue',
-        isCalendar && 'border-l-4 border-l-teal-500',
-        isArchived && 'opacity-70'
+        isCalendar && 'border-l-4 border-l-teal-500'
       )}
     >
       <div className="flex items-start gap-4">
@@ -1022,11 +990,6 @@ function DocumentCard({
               {formatDate(displayDate)}
             </p>
           )}
-          {isArchived && (
-            <span className="text-xs px-1.5 py-0.5 bg-bauhaus-gray text-white mt-1 inline-block">
-              Archived
-            </span>
-          )}
           {isCalendar && (
             <span className="text-xs px-1.5 py-0.5 bg-teal-100 text-teal-700 mt-1 inline-block">
               Calendar
@@ -1051,7 +1014,6 @@ function DocumentGroupCard({
   const attachments = documents.filter((doc) => doc.sourceType === 'attachment');
   const primary = emailDoc ?? documents[0]!;
   const groupSelected = documents.some((doc) => doc.id === selectedDoc?.id);
-  const groupArchived = documents.every((doc) => doc.archivedAt);
 
   const title = primary.subject || primary.filename || 'Email';
   const subtitle = primary.fromAddress;
@@ -1062,8 +1024,7 @@ function DocumentGroupCard({
       onClick={() => onSelect(primary)}
       className={cn(
         'bauhaus-card cursor-pointer',
-        groupSelected && 'ring-2 ring-bauhaus-blue',
-        groupArchived && 'opacity-70'
+        groupSelected && 'ring-2 ring-bauhaus-blue'
       )}
     >
       <div className="flex items-start gap-4">
@@ -1088,11 +1049,6 @@ function DocumentGroupCard({
               {formatDate(displayDate)}
             </p>
           )}
-          {groupArchived && (
-            <span className="text-xs px-1.5 py-0.5 bg-bauhaus-gray text-white mt-1 inline-block">
-              Archived
-            </span>
-          )}
         </div>
       </div>
 
@@ -1112,8 +1068,7 @@ function DocumentGroupCard({
                 }}
                 className={cn(
                   'flex items-start justify-between gap-4 p-2 border border-bauhaus-lightgray hover:bg-bauhaus-lightgray/50',
-                  isSelected && 'bg-bauhaus-lightgray/70',
-                  attachment.archivedAt && 'opacity-70'
+                  isSelected && 'bg-bauhaus-lightgray/70'
                 )}
               >
                 <div className="min-w-0">
@@ -1181,35 +1136,23 @@ function CalendarEventDetail({
   onArchiveToggle: () => void;
   archiving: boolean;
 }) {
-  const isArchived = !!doc.archivedAt;
-
   return (
     <>
       <div className="sticky top-0 bg-white z-10 pb-3 border-b border-bauhaus-lightgray">
         <div className="flex items-start justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <span className="inline-block px-2 py-1 text-xs font-medium uppercase bg-teal-600 text-white">
-              Calendar Event
-            </span>
-            {isArchived && (
-              <span className="inline-block px-2 py-1 text-xs font-medium uppercase bg-bauhaus-gray text-white">
-                Archived
-              </span>
-            )}
-          </div>
+          <span className="inline-block px-2 py-1 text-xs font-medium uppercase bg-teal-600 text-white">
+            Calendar Event
+          </span>
           <button
             onClick={onArchiveToggle}
             disabled={archiving}
             className={cn(
-              'p-2 border transition-colors',
-              isArchived
-                ? 'border-bauhaus-blue text-bauhaus-blue hover:bg-bauhaus-lightgray'
-                : 'border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray',
+              'p-2 border border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray transition-colors',
               archiving && 'opacity-60 cursor-not-allowed'
             )}
-            title={isArchived ? 'Unarchive' : 'Archive'}
+            title="Archive"
           >
-            {isArchived ? <Inbox size={18} /> : <Archive size={18} />}
+            <Archive size={18} />
           </button>
         </div>
 
@@ -1224,18 +1167,6 @@ function CalendarEventDetail({
             icon={Clock}
             label="When"
             value={`${formatDate(doc.calendarStart)}${doc.calendarEnd ? ` - ${formatDate(doc.calendarEnd)}` : ''}`}
-          />
-        )}
-        {doc.archivedAt && (
-          <DetailRow
-            icon={Archive}
-            label="Archived"
-            value={[
-              formatDate(doc.archivedAt),
-              doc.archivedReason,
-            ]
-              .filter(Boolean)
-              .join(' • ')}
           />
         )}
         {doc.calendarLocation && (

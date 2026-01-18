@@ -146,3 +146,36 @@ export async function getTotalClaimAmount(): Promise<{
     count: claims.length,
   };
 }
+
+/**
+ * Archive a claim.
+ */
+export async function archiveClaim(id: string): Promise<ScrapedClaim | null> {
+  return updateScrapedClaim(id, { archivedAt: new Date() });
+}
+
+/**
+ * Unarchive a claim.
+ */
+export async function unarchiveClaim(id: string): Promise<ScrapedClaim | null> {
+  const existing = await claimsStorage.get(id);
+  if (!existing) return null;
+
+  const { archivedAt: _, ...rest } = existing;
+  const updated: ScrapedClaim = { ...rest };
+  return claimsStorage.save(updated);
+}
+
+/**
+ * Get all archived claims.
+ */
+export async function getArchivedClaims(): Promise<ScrapedClaim[]> {
+  return claimsStorage.find((c) => !!c.archivedAt);
+}
+
+/**
+ * Get all non-archived claims.
+ */
+export async function getActiveClaims(): Promise<ScrapedClaim[]> {
+  return claimsStorage.find((c) => !c.archivedAt);
+}

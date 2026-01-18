@@ -81,12 +81,15 @@ export interface Illness {
 
   /** Last update timestamp */
   updatedAt: Date;
+
+  /** Timestamp when illness was archived (if archived) */
+  archivedAt?: Date;
 }
 
 /**
  * Input type for creating a new illness (without auto-generated fields).
  */
-export type CreateIllnessInput = Omit<Illness, "id" | "relevantAccounts" | "createdAt" | "updatedAt">;
+export type CreateIllnessInput = Omit<Illness, "id" | "relevantAccounts" | "createdAt" | "updatedAt" | "archivedAt">;
 
 /**
  * Input type for updating an existing illness.

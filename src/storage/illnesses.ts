@@ -163,3 +163,36 @@ export async function resolveIllness(
 ): Promise<Illness | null> {
   return updateIllness(id, { resolvedDate });
 }
+
+/**
+ * Archive an illness.
+ */
+export async function archiveIllness(id: string): Promise<Illness | null> {
+  return updateIllness(id, { archivedAt: new Date() });
+}
+
+/**
+ * Unarchive an illness.
+ */
+export async function unarchiveIllness(id: string): Promise<Illness | null> {
+  const existing = await illnessesStorage.get(id);
+  if (!existing) return null;
+
+  const { archivedAt: _, ...rest } = existing;
+  const updated: Illness = { ...rest, updatedAt: new Date() };
+  return illnessesStorage.save(updated);
+}
+
+/**
+ * Get all archived illnesses.
+ */
+export async function getArchivedIllnesses(): Promise<Illness[]> {
+  return illnessesStorage.find((i) => !!i.archivedAt);
+}
+
+/**
+ * Get all non-archived illnesses.
+ */
+export async function getActiveIllnessesAll(): Promise<Illness[]> {
+  return illnessesStorage.find((i) => !i.archivedAt);
+}

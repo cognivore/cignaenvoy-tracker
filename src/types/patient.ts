@@ -40,12 +40,15 @@ export interface Patient {
 
   /** Last update timestamp */
   updatedAt: Date;
+
+  /** Timestamp when patient was archived (if archived) */
+  archivedAt?: Date;
 }
 
 /**
  * Input type for creating a new patient (without auto-generated fields).
  */
-export type CreatePatientInput = Omit<Patient, "id" | "createdAt" | "updatedAt">;
+export type CreatePatientInput = Omit<Patient, "id" | "createdAt" | "updatedAt" | "archivedAt">;
 
 /**
  * Input type for updating an existing patient.

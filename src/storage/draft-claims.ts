@@ -99,3 +99,36 @@ export async function hasDraftClaimForDocument(
   const drafts = await getDraftClaimsForDocument(documentId);
   return drafts.length > 0;
 }
+
+/**
+ * Archive a draft claim.
+ */
+export async function archiveDraftClaim(id: string): Promise<DraftClaim | null> {
+  return updateDraftClaim(id, { archivedAt: new Date() });
+}
+
+/**
+ * Unarchive a draft claim.
+ */
+export async function unarchiveDraftClaim(id: string): Promise<DraftClaim | null> {
+  const existing = await draftClaimsStorage.get(id);
+  if (!existing) return null;
+
+  const { archivedAt: _, ...rest } = existing;
+  const updated: DraftClaim = { ...rest, updatedAt: new Date() };
+  return draftClaimsStorage.save(updated);
+}
+
+/**
+ * Get all archived draft claims.
+ */
+export async function getArchivedDraftClaims(): Promise<DraftClaim[]> {
+  return draftClaimsStorage.find((d) => !!d.archivedAt);
+}
+
+/**
+ * Get all non-archived draft claims.
+ */
+export async function getActiveDraftClaims(): Promise<DraftClaim[]> {
+  return draftClaimsStorage.find((d) => !d.archivedAt);
+}

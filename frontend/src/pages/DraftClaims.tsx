@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Calendar, Check, ExternalLink, FilePlus, FileText, RefreshCw, X } from 'lucide-react';
+import { Calendar, Check, ExternalLink, FilePlus, FileText, RefreshCw, X, Archive } from 'lucide-react';
 import { cn, formatCurrency, formatDate, truncate } from '@/lib/utils';
 import {
   FilterTabs,
@@ -46,8 +46,12 @@ export default function DraftClaims() {
     markAllSeen,
     applyLocalUpdate,
     upsertItem,
+    removeItem,
   } = useUnseenList<DraftClaim>({
-    fetcher: api.getDraftClaims,
+    fetcher: async () => {
+      const all = await api.getDraftClaims();
+      return all.filter((draft) => !draft.archivedAt);
+    },
     cacheKey: 'draft-claims',
   });
 
@@ -255,6 +259,21 @@ export default function DraftClaims() {
     }
   }
 
+  async function handleArchive() {
+    if (!selectedDraft) return;
+    setProcessing('archiving');
+    try {
+      await api.setDraftClaimArchived(selectedDraft.id, true);
+      removeItem(selectedDraft.id);
+      setSelectedDraft(null);
+    } catch (err) {
+      console.error('Failed to archive draft claim:', err);
+      alert(`Error: ${err}`);
+    } finally {
+      setProcessing(null);
+    }
+  }
+
   function toggleCalendarId(id: string) {
     setSelectedCalendarIds((prev) =>
       prev.includes(id) ? prev.filter((docId) => docId !== id) : [...prev, id]
@@ -364,7 +383,20 @@ export default function DraftClaims() {
                 >
                   {statusLabels[selectedDraft.status].label}
                 </span>
-                <span className="text-xs text-bauhaus-gray">ID: {selectedDraft.id}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-bauhaus-gray">ID: {selectedDraft.id}</span>
+                  <button
+                    onClick={handleArchive}
+                    disabled={processing === 'archiving'}
+                    className={cn(
+                      'p-2 border border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray transition-colors',
+                      processing === 'archiving' && 'opacity-60 cursor-not-allowed'
+                    )}
+                    title="Archive"
+                  >
+                    <Archive size={16} />
+                  </button>
+                </div>
               </div>
 
               <h2 className="text-xl font-bold mb-4 flex-shrink-0">Draft Claim Details</h2>

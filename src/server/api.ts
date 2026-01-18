@@ -9,7 +9,13 @@ import * as http from "node:http";
 import * as url from "node:url";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { claimsStorage } from "../storage/claims.js";
+import {
+  claimsStorage,
+  archiveClaim,
+  unarchiveClaim,
+  getArchivedClaims,
+  getActiveClaims,
+} from "../storage/claims.js";
 import {
   documentsStorage,
   getMedicalBills,
@@ -27,6 +33,10 @@ import {
 import {
   draftClaimsStorage,
   updateDraftClaim,
+  archiveDraftClaim,
+  unarchiveDraftClaim,
+  getArchivedDraftClaims,
+  getActiveDraftClaims,
 } from "../storage/draft-claims.js";
 import {
   archiveRulesStorage,
@@ -38,6 +48,10 @@ import {
   createPatient,
   updatePatient,
   findPatientByCignaId,
+  archivePatient,
+  unarchivePatient,
+  getArchivedPatients,
+  getActivePatients,
 } from "../storage/patients.js";
 import {
   illnessesStorage,
@@ -46,6 +60,10 @@ import {
   getIllnessesForPatient,
   getActiveIllnesses,
   addRelevantAccounts,
+  archiveIllness,
+  unarchiveIllness,
+  getArchivedIllnesses,
+  getActiveIllnessesAll,
 } from "../storage/illnesses.js";
 import { ensureStorageDirs } from "../storage/index.js";
 import { DocumentProcessor } from "../services/document-processor.js";
@@ -212,6 +230,32 @@ routes.GET["/api/claims/:id"] = async (_req, _res, params) => {
   const claim = await claimsStorage.get(params.id!);
   requireEntity(claim, "Claim");
   return claim;
+};
+
+routes.GET["/api/claims/archived"] = async () => getArchivedClaims();
+
+routes.GET["/api/claims/active"] = async () => getActiveClaims();
+
+/** Archive or unarchive a claim */
+routes.PUT["/api/claims/:id/archive"] = async (_req, _res, params, body) => {
+  const { archived } = body as { archived?: boolean };
+
+  if (archived === undefined) {
+    httpError(400, "archived is required");
+  }
+
+  const claim = await claimsStorage.get(params.id!);
+  requireEntity(claim, "Claim");
+
+  if (archived) {
+    const updated = await archiveClaim(params.id!);
+    requireEntity(updated, "Claim");
+    return updated;
+  }
+
+  const updated = await unarchiveClaim(params.id!);
+  requireEntity(updated, "Claim");
+  return updated;
 };
 
 // =============================================
@@ -421,6 +465,32 @@ routes.GET["/api/patients/by-cigna-id/:cignaId"] = async (_req, _res, params) =>
   return patient;
 };
 
+routes.GET["/api/patients/archived"] = async () => getArchivedPatients();
+
+routes.GET["/api/patients/active"] = async () => getActivePatients();
+
+/** Archive or unarchive a patient */
+routes.PUT["/api/patients/:id/archive"] = async (_req, _res, params, body) => {
+  const { archived } = body as { archived?: boolean };
+
+  if (archived === undefined) {
+    httpError(400, "archived is required");
+  }
+
+  const patient = await patientsStorage.get(params.id!);
+  requireEntity(patient, "Patient");
+
+  if (archived) {
+    const updated = await archivePatient(params.id!);
+    requireEntity(updated, "Patient");
+    return updated;
+  }
+
+  const updated = await unarchivePatient(params.id!);
+  requireEntity(updated, "Patient");
+  return updated;
+};
+
 // =============================================
 // ILLNESSES ROUTES
 // =============================================
@@ -451,6 +521,32 @@ routes.GET["/api/patients/:patientId/illnesses"] = async (_req, _res, params) =>
 
 routes.GET["/api/patients/:patientId/illnesses/active"] = async (_req, _res, params) =>
   getActiveIllnesses(params.patientId!);
+
+routes.GET["/api/illnesses/archived"] = async () => getArchivedIllnesses();
+
+routes.GET["/api/illnesses/active"] = async () => getActiveIllnessesAll();
+
+/** Archive or unarchive an illness */
+routes.PUT["/api/illnesses/:id/archive"] = async (_req, _res, params, body) => {
+  const { archived } = body as { archived?: boolean };
+
+  if (archived === undefined) {
+    httpError(400, "archived is required");
+  }
+
+  const illness = await illnessesStorage.get(params.id!);
+  requireEntity(illness, "Illness");
+
+  if (archived) {
+    const updated = await archiveIllness(params.id!);
+    requireEntity(updated, "Illness");
+    return updated;
+  }
+
+  const updated = await unarchiveIllness(params.id!);
+  requireEntity(updated, "Illness");
+  return updated;
+};
 
 // =============================================
 // ASSIGNMENTS ROUTES
@@ -581,6 +677,32 @@ routes.POST["/api/draft-claims/run-matching"] = async () => {
   const matcher = new Matcher();
   const assignments = await matcher.matchDocumentsByIds(documentIds);
   return { created: assignments.length, assignments };
+};
+
+routes.GET["/api/draft-claims/archived"] = async () => getArchivedDraftClaims();
+
+routes.GET["/api/draft-claims/active"] = async () => getActiveDraftClaims();
+
+/** Archive or unarchive a draft claim */
+routes.PUT["/api/draft-claims/:id/archive"] = async (_req, _res, params, body) => {
+  const { archived } = body as { archived?: boolean };
+
+  if (archived === undefined) {
+    httpError(400, "archived is required");
+  }
+
+  const draft = await draftClaimsStorage.get(params.id!);
+  requireEntity(draft, "Draft claim");
+
+  if (archived) {
+    const updated = await archiveDraftClaim(params.id!);
+    requireEntity(updated, "Draft claim");
+    return updated;
+  }
+
+  const updated = await unarchiveDraftClaim(params.id!);
+  requireEntity(updated, "Draft claim");
+  return updated;
 };
 
 // =============================================

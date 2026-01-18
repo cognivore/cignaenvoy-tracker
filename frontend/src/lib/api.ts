@@ -57,6 +57,7 @@ export interface ScrapedClaim {
   submissionDate: string;
   lineItems: ScrapedLineItem[];
   scrapedAt: string;
+  archivedAt?: string;
 }
 
 export interface DetectedAmount {
@@ -157,6 +158,7 @@ export interface DraftClaim {
   updatedAt: string;
   acceptedAt?: string;
   rejectedAt?: string;
+  archivedAt?: string;
 }
 
 export interface DocumentClaimAssignment {
@@ -199,6 +201,7 @@ export interface Patient {
   email?: string;
   createdAt: string;
   updatedAt: string;
+  archivedAt?: string;
 }
 
 export interface RelevantAccount {
@@ -221,6 +224,7 @@ export interface Illness {
   relevantAccounts: RelevantAccount[];
   createdAt: string;
   updatedAt: string;
+  archivedAt?: string;
 }
 
 export interface ArchiveRule {
@@ -296,6 +300,13 @@ export const api = {
   // Claims
   getClaims: () => fetchJson<ScrapedClaim[]>("/claims"),
   getClaim: (id: string) => fetchJson<ScrapedClaim>(`/claims/${id}`),
+  getArchivedClaims: () => fetchJson<ScrapedClaim[]>("/claims/archived"),
+  getActiveClaims: () => fetchJson<ScrapedClaim[]>("/claims/active"),
+  setClaimArchived: (id: string, archived: boolean) =>
+    fetchJson<ScrapedClaim>(`/claims/${id}/archive`, {
+      method: "PUT",
+      body: JSON.stringify({ archived }),
+    }),
 
   // Documents
   getDocuments: () => fetchJson<MedicalDocument[]>("/documents"),
@@ -339,6 +350,8 @@ export const api = {
   // Patients
   getPatients: () => fetchJson<Patient[]>("/patients"),
   getPatient: (id: string) => fetchJson<Patient>(`/patients/${id}`),
+  getArchivedPatients: () => fetchJson<Patient[]>("/patients/archived"),
+  getActivePatients: () => fetchJson<Patient[]>("/patients/active"),
   createPatient: (input: CreatePatientInput) =>
     fetchJson<Patient>("/patients", {
       method: "POST",
@@ -349,10 +362,17 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(updates),
     }),
+  setPatientArchived: (id: string, archived: boolean) =>
+    fetchJson<Patient>(`/patients/${id}/archive`, {
+      method: "PUT",
+      body: JSON.stringify({ archived }),
+    }),
 
   // Illnesses
   getIllnesses: () => fetchJson<Illness[]>("/illnesses"),
   getIllness: (id: string) => fetchJson<Illness>(`/illnesses/${id}`),
+  getArchivedIllnesses: () => fetchJson<Illness[]>("/illnesses/archived"),
+  getActiveIllnesses: () => fetchJson<Illness[]>("/illnesses/active"),
   getPatientIllnesses: (patientId: string) =>
     fetchJson<Illness[]>(`/patients/${patientId}/illnesses`),
   getPatientActiveIllnesses: (patientId: string) =>
@@ -366,6 +386,11 @@ export const api = {
     fetchJson<Illness>(`/illnesses/${id}`, {
       method: "PUT",
       body: JSON.stringify(updates),
+    }),
+  setIllnessArchived: (id: string, archived: boolean) =>
+    fetchJson<Illness>(`/illnesses/${id}/archive`, {
+      method: "PUT",
+      body: JSON.stringify({ archived }),
     }),
 
   // Assignments
@@ -390,6 +415,13 @@ export const api = {
 
   // Draft Claims
   getDraftClaims: () => fetchJson<DraftClaim[]>("/draft-claims"),
+  getArchivedDraftClaims: () => fetchJson<DraftClaim[]>("/draft-claims/archived"),
+  getActiveDraftClaims: () => fetchJson<DraftClaim[]>("/draft-claims/active"),
+  setDraftClaimArchived: (id: string, archived: boolean) =>
+    fetchJson<DraftClaim>(`/draft-claims/${id}/archive`, {
+      method: "PUT",
+      body: JSON.stringify({ archived }),
+    }),
   generateDraftClaims: (range: DraftClaimRange) =>
     fetchJson<{ created: number; drafts: DraftClaim[] }>("/draft-claims/generate", {
       method: "POST",
