@@ -355,37 +355,39 @@ export class DocumentProcessor {
     // Check if email body is medical-related
     const emailText = `${email.subject} ${email.body ?? email.snippet}`;
     if (isMedicalRelated(emailText)) {
-      // Check if already processed
+      // Check if already processed - only skip the email body, NOT attachments
       if (this.config.skipExisting) {
         const existing = await findDocumentByEmailId(email.id);
         if (existing) {
           documents.push(existing);
-          return documents;
+          // Don't return early - still need to check for new attachments below
         }
       }
 
-      // Create document for email body
-      const emailDoc: CreateMedicalDocumentInput = {
-        sourceType: "email",
-        emailId: email.id,
-        account: email.account,
-        subject: email.subject,
-        fromAddress: email.from,
-        toAddress: email.to,
-        bodySnippet: email.snippet,
-        date: new Date(email.date),
-        ocrText: email.body ?? email.snippet,
-        ocrCharCount: (email.body ?? email.snippet).length,
-        detectedAmounts: extractAmounts(emailText),
-        classification: classifyDocument(email.body ?? email.snippet, email.subject),
-        medicalKeywords: extractMedicalKeywords(emailText),
-      };
+      // Create document for email body (if not already existing)
+      if (!documents.some((d) => d.emailId === email.id && d.sourceType === "email")) {
+        const emailDoc: CreateMedicalDocumentInput = {
+          sourceType: "email",
+          emailId: email.id,
+          account: email.account,
+          subject: email.subject,
+          fromAddress: email.from,
+          toAddress: email.to,
+          bodySnippet: email.snippet,
+          date: new Date(email.date),
+          ocrText: email.body ?? email.snippet,
+          ocrCharCount: (email.body ?? email.snippet).length,
+          detectedAmounts: extractAmounts(emailText),
+          classification: classifyDocument(email.body ?? email.snippet, email.subject),
+          medicalKeywords: extractMedicalKeywords(emailText),
+        };
 
-      const doc = await createMedicalDocument(emailDoc);
-      documents.push(doc);
+        const doc = await createMedicalDocument(emailDoc);
+        documents.push(doc);
+      }
     }
 
-    // Process attachments if email has any
+    // Process attachments if email has any (always check, even if email body was skipped)
     if (email.has_attachments) {
       try {
         // Fetch full email to get attachment details
