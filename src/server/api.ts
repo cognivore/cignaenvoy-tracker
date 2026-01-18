@@ -319,8 +319,11 @@ routes.POST["/api/archive-rules"] = async (_req, _res, _params, body) => {
     ...(attachmentNameContains && { attachmentNameContains }),
   });
 
+  // Apply to existing documents in background (fire-and-forget) to avoid timeout
   if (input.applyToExisting ?? true) {
-    await applyArchiveRuleToExistingDocuments(rule);
+    applyArchiveRuleToExistingDocuments(rule).catch((err) =>
+      console.error("Failed to apply archive rule to existing docs:", err)
+    );
   }
 
   return rule;
@@ -372,8 +375,11 @@ routes.PUT["/api/archive-rules/:id"] = async (_req, _res, params, body) => {
   const updated = await updateArchiveRule(params.id!, normalized);
   requireEntity(updated, "Archive rule");
 
+  // Apply to existing documents in background (fire-and-forget) to avoid timeout
   if (updates.applyToExisting) {
-    await applyArchiveRuleToExistingDocuments(updated);
+    applyArchiveRuleToExistingDocuments(updated).catch((err) =>
+      console.error("Failed to apply archive rule to existing docs:", err)
+    );
   }
 
   return updated;
