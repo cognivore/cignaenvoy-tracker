@@ -496,4 +496,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(credentials),
     }),
+
+  /**
+   * Upload a proof of payment file (image or PDF).
+   * Returns the created document ID.
+   */
+  uploadProofFile: async (file: File): Promise<{ id: string; filename: string; mimeType: string; size: number }> => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch(`${API_BASE}/proof-upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || `Upload failed: HTTP ${response.status}`);
+    }
+
+    return response.json();
+  },
 };

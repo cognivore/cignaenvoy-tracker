@@ -22,6 +22,7 @@ import {
   setPaymentOverride,
   archiveDocument,
   unarchiveDocument,
+  createMedicalDocument,
 } from "../storage/documents.js";
 import {
   assignmentsStorage,
@@ -856,7 +857,7 @@ routes.GET["/api/stats"] = async () => {
   };
 };
 
-// === FILE SERVING ===
+// === FILE SERVING & UPLOAD ===
 
 const MIME_TYPES: Record<string, string> = {
   ".pdf": "application/pdf",
@@ -868,6 +869,133 @@ const MIME_TYPES: Record<string, string> = {
   ".txt": "text/plain",
   ".html": "text/html",
 };
+
+const UPLOADS_DIR = path.join(process.cwd(), "data", "uploads");
+
+// Ensure uploads directory exists
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+/**
+ * Parse multipart/form-data from request.
+ * Simple implementation for single file upload.
+ */
+async function parseMultipartFormData(
+  req: http.IncomingMessage
+): Promise<{ filename: string; mimeType: string; buffer: Buffer } | null> {
+  return new Promise((resolve, reject) => {
+    const contentType = req.headers["content-type"] ?? "";
+    const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+    if (!boundaryMatch) {
+      resolve(null);
+      return;
+    }
+
+    const boundary = boundaryMatch[1] || boundaryMatch[2];
+    const chunks: Buffer[] = [];
+
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      try {
+        const buffer = Buffer.concat(chunks);
+        const boundaryBuffer = Buffer.from(`--${boundary}`);
+
+        // Find the first part (skip preamble)
+        let start = buffer.indexOf(boundaryBuffer);
+        if (start === -1) {
+          resolve(null);
+          return;
+        }
+        start += boundaryBuffer.length + 2; // Skip boundary + CRLF
+
+        // Find headers end
+        const headersEnd = buffer.indexOf(Buffer.from("\r\n\r\n"), start);
+        if (headersEnd === -1) {
+          resolve(null);
+          return;
+        }
+
+        const headersStr = buffer.slice(start, headersEnd).toString("utf-8");
+
+        // Extract filename and content-type from headers
+        const filenameMatch = headersStr.match(/filename="([^"]+)"/i);
+        const contentTypeMatch = headersStr.match(/Content-Type:\s*([^\r\n]+)/i);
+
+        if (!filenameMatch) {
+          resolve(null);
+          return;
+        }
+
+        const filename = filenameMatch[1];
+        const mimeType = contentTypeMatch ? contentTypeMatch[1].trim() : "application/octet-stream";
+
+        // Find content end (next boundary)
+        const contentStart = headersEnd + 4; // Skip \r\n\r\n
+        const endBoundary = buffer.indexOf(boundaryBuffer, contentStart);
+        const contentEnd = endBoundary !== -1 ? endBoundary - 2 : buffer.length; // -2 for CRLF before boundary
+
+        const fileBuffer = buffer.slice(contentStart, contentEnd);
+
+        resolve({ filename, mimeType, buffer: fileBuffer });
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+/**
+ * Handle proof file upload.
+ * Creates a MedicalDocument record for the uploaded file.
+ */
+async function handleProofUpload(
+  req: http.IncomingMessage,
+  res: http.ServerResponse
+): Promise<boolean> {
+  const parsed = await parseMultipartFormData(req);
+  if (!parsed) {
+    json(res, { error: "Invalid file upload" }, 400);
+    return true;
+  }
+
+  const { filename, mimeType, buffer } = parsed;
+
+  // Validate file type
+  const allowedTypes = ["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"];
+  if (!allowedTypes.includes(mimeType)) {
+    json(res, { error: `Invalid file type: ${mimeType}. Allowed: images, PDF` }, 400);
+    return true;
+  }
+
+  // Generate unique filename
+  const ext = path.extname(filename) || (mimeType === "application/pdf" ? ".pdf" : ".png");
+  const uniqueFilename = `proof-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+  const filePath = path.join(UPLOADS_DIR, uniqueFilename);
+
+  // Save file
+  fs.writeFileSync(filePath, buffer);
+
+  // Create MedicalDocument record
+  const doc = await createMedicalDocument({
+    sourceType: "manual_upload",
+    filename,
+    attachmentPath: filePath,
+    mimeType,
+    fileSize: buffer.length,
+    classification: "receipt",
+    date: new Date(),
+    detectedAmounts: [],
+  });
+
+  json(res, {
+    id: doc.id,
+    filename: doc.filename,
+    mimeType: doc.mimeType,
+    size: doc.fileSize,
+  });
+
+  return true;
+}
 
 /**
  * Serve attachment files directly.
@@ -971,6 +1099,12 @@ async function handleRequest(
       if (!served) {
         json(res, { error: "File not found" }, 404);
       }
+      return;
+    }
+
+    // Special handling for proof file upload (multipart/form-data)
+    if (pathname === "/api/proof-upload" && method === "POST") {
+      await handleProofUpload(req, res);
       return;
     }
 

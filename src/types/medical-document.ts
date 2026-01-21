@@ -6,13 +6,14 @@
 /**
  * Source type indicating where the document came from.
  */
-export type DocumentSourceType = "email" | "attachment" | "calendar";
+export type DocumentSourceType = "email" | "attachment" | "calendar" | "manual_upload";
 
 /** All document source types */
 export const DOCUMENT_SOURCE_TYPES: readonly DocumentSourceType[] = [
   "email",
   "attachment",
   "calendar",
+  "manual_upload",
 ] as const;
 
 /**

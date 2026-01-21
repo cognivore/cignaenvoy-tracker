@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Calendar, Check, ExternalLink, FilePlus, FileText, RefreshCw, X, Archive, RotateCcw } from 'lucide-react';
+import { Check, ExternalLink, FilePlus, FileText, RefreshCw, X, Archive, RotateCcw, Upload, Trash2 } from 'lucide-react';
 import { cn, formatCurrency, formatDate, truncate } from '@/lib/utils';
 import {
   FilterTabs,
@@ -171,7 +171,9 @@ export default function DraftClaims() {
   const [manualDate, setManualDate] = useState('');
   const [selectedCalendarIds, setSelectedCalendarIds] = useState<string[]>([]);
   const [selectedProofIds, setSelectedProofIds] = useState<string[]>([]);
-  const [paymentProofText, setPaymentProofText] = useState('');
+  const [paymentProofNote, setPaymentProofNote] = useState('');
+  const [uploadingProof, setUploadingProof] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const loadSupportingData = async () => {
@@ -210,7 +212,7 @@ export default function DraftClaims() {
       setManualDate('');
       setSelectedCalendarIds([]);
       setSelectedProofIds([]);
-      setPaymentProofText('');
+      setPaymentProofNote('');
       return;
     }
 
@@ -218,7 +220,7 @@ export default function DraftClaims() {
     setDoctorNotes(draft.doctorNotes ?? '');
     setSelectedCalendarIds(draft.calendarDocumentIds ?? []);
     setSelectedProofIds(draft.paymentProofDocumentIds ?? []);
-    setPaymentProofText(draft.paymentProofText ?? '');
+    setPaymentProofNote(draft.paymentProofText ?? '');
 
     if (draft.treatmentDateSource === 'manual') {
       setDateMode('manual');
@@ -298,7 +300,7 @@ export default function DraftClaims() {
     : undefined;
   const proofText =
     selectedDraft?.status === 'pending'
-      ? paymentProofText.trim()
+      ? paymentProofNote.trim()
       : selectedDraft?.paymentProofText ?? '';
   const proofProvided = activeProofIds.length > 0 || !!proofText;
   const proofSummary = proofProvided
@@ -344,8 +346,8 @@ export default function DraftClaims() {
       return;
     }
 
-    const trimmedProofText = paymentProofText.trim();
-    if (selectedProofIds.length === 0 && !trimmedProofText) {
+    const trimmedProofNote = paymentProofNote.trim();
+    if (selectedProofIds.length === 0 && !trimmedProofNote) {
       alert('Proof of payment is required');
       return;
     }
@@ -358,7 +360,7 @@ export default function DraftClaims() {
         ...(dateMode === 'manual' && manualDate ? { treatmentDate: manualDate } : {}),
         ...(dateMode === 'calendar' ? { calendarDocumentIds: selectedCalendarIds } : {}),
         paymentProofDocumentIds: selectedProofIds,
-        ...(trimmedProofText ? { paymentProofText: trimmedProofText } : {}),
+        ...(trimmedProofNote ? { paymentProofText: trimmedProofNote } : {}),
       });
 
       upsertItem(updated);
@@ -666,23 +668,21 @@ export default function DraftClaims() {
                         <label className="block text-sm text-bauhaus-gray mb-2">
                           Proof of Payment (required)
                         </label>
-                        <div className="max-h-40 overflow-auto border border-bauhaus-lightgray">
-                          {paymentProofCandidates.length === 0 ? (
-                            <div className="p-3 text-sm text-bauhaus-gray">
-                              No proof documents found. Paste confirmation below or attach proof in email.
-                            </div>
-                          ) : (
+
+                        {/* Existing proof candidates */}
+                        {paymentProofCandidates.length > 0 && (
+                          <div className="max-h-32 overflow-auto border border-bauhaus-lightgray mb-2">
                             <ul className="divide-y divide-bauhaus-lightgray">
                               {paymentProofCandidates.map((doc) => (
-                                <li key={doc.id} className="p-3 flex items-start gap-3">
+                                <li key={doc.id} className="p-2 flex items-start gap-2">
                                   <input
                                     type="checkbox"
                                     checked={selectedProofIds.includes(doc.id)}
                                     onChange={() => toggleProofId(doc.id)}
                                     className="mt-1"
                                   />
-                                  <div>
-                                    <p className="font-medium flex items-center gap-1">
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-sm font-medium flex items-center gap-1 truncate">
                                       {doc.attachmentPath ? (
                                         <a
                                           href={getDocumentFileUrl(doc.id)}
@@ -692,7 +692,7 @@ export default function DraftClaims() {
                                           onClick={(e) => e.stopPropagation()}
                                         >
                                           {doc.filename || doc.subject || 'Payment proof'}
-                                          <ExternalLink size={14} />
+                                          <ExternalLink size={12} />
                                         </a>
                                       ) : (
                                         doc.filename || doc.subject || 'Payment proof'
@@ -705,18 +705,102 @@ export default function DraftClaims() {
                                 </li>
                               ))}
                             </ul>
-                          )}
-                        </div>
+                          </div>
+                        )}
+
+                        {/* Selected uploaded proofs */}
+                        {selectedProofIds.filter(id => !paymentProofCandidates.some(c => c.id === id)).length > 0 && (
+                          <div className="mb-2 space-y-1">
+                            <p className="text-xs text-bauhaus-gray">Uploaded proofs:</p>
+                            {selectedProofIds
+                              .filter(id => !paymentProofCandidates.some(c => c.id === id))
+                              .map(id => {
+                                const doc = documents.find(d => d.id === id);
+                                return (
+                                  <div key={id} className="flex items-center gap-2 p-2 bg-emerald-50 border border-emerald-200">
+                                    <FileText size={14} className="text-emerald-600 flex-shrink-0" />
+                                    {doc?.attachmentPath ? (
+                                      <a
+                                        href={getDocumentFileUrl(id)}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-sm text-emerald-700 hover:underline flex-1 truncate"
+                                      >
+                                        {doc.filename || 'Uploaded proof'}
+                                      </a>
+                                    ) : (
+                                      <span className="text-sm text-emerald-700 flex-1 truncate">
+                                        {doc?.filename || 'Uploaded proof'}
+                                      </span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleProofId(id)}
+                                      className="p-1 hover:bg-emerald-100 text-emerald-600"
+                                      title="Remove"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                          </div>
+                        )}
+
+                        {/* File upload area */}
                         <div className="mt-2">
-                          <label className="block text-xs text-bauhaus-gray mb-1">
-                            Manual proof (paste confirmation)
-                          </label>
-                          <textarea
-                            value={paymentProofText}
-                            onChange={(e) => setPaymentProofText(e.target.value)}
-                            className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
-                            rows={2}
-                            placeholder="Paste Monzo transfer confirmation or transaction reference..."
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept="image/*,application/pdf"
+                            className="hidden"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+
+                              setUploadingProof(true);
+                              try {
+                                const result = await api.uploadProofFile(file);
+                                setSelectedProofIds(prev => [...prev, result.id]);
+                                // Refresh documents to include the new upload
+                                const docs = await api.getDocuments();
+                                setDocuments(docs);
+                              } catch (err) {
+                                console.error('Failed to upload proof:', err);
+                                alert(`Upload failed: ${err}`);
+                              } finally {
+                                setUploadingProof(false);
+                                if (fileInputRef.current) {
+                                  fileInputRef.current.value = '';
+                                }
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={uploadingProof}
+                            className={cn(
+                              'w-full flex items-center justify-center gap-2 p-3 border-2 border-dashed border-bauhaus-gray text-bauhaus-gray hover:border-bauhaus-blue hover:text-bauhaus-blue transition-colors',
+                              uploadingProof && 'opacity-60 cursor-not-allowed'
+                            )}
+                          >
+                            <Upload size={18} />
+                            {uploadingProof ? 'Uploading...' : 'Upload screenshot or PDF'}
+                          </button>
+                          <p className="text-xs text-bauhaus-gray mt-1">
+                            Supports images (PNG, JPG) and PDF files
+                          </p>
+                        </div>
+
+                        {/* Optional note */}
+                        <div className="mt-2">
+                          <input
+                            type="text"
+                            value={paymentProofNote}
+                            onChange={(e) => setPaymentProofNote(e.target.value)}
+                            className="w-full p-2 border border-bauhaus-lightgray focus:outline-none focus:ring-1 focus:ring-bauhaus-blue text-sm"
+                            placeholder="Optional: transaction ref or note..."
                           />
                         </div>
                       </div>
@@ -878,6 +962,14 @@ export default function DraftClaims() {
   );
 }
 
+const classificationLabels: Record<string, { label: string; color: string }> = {
+  medical_bill: { label: 'Bill', color: 'bg-amber-100 text-amber-800' },
+  receipt: { label: 'Receipt', color: 'bg-emerald-100 text-emerald-800' },
+  appointment: { label: 'Appt', color: 'bg-sky-100 text-sky-800' },
+  prescription: { label: 'Rx', color: 'bg-violet-100 text-violet-800' },
+  other: { label: 'Other', color: 'bg-gray-100 text-gray-700' },
+};
+
 function DraftCard({
   draft,
   document,
@@ -890,65 +982,126 @@ function DraftCard({
   onClick: () => void;
 }) {
   const hasFile = document?.attachmentPath;
-  const filename = document?.filename || document?.subject || 'Attachment';
+  const filename = document?.filename || 'Attachment';
+  const subject = document?.subject;
+  const fromAddress = document?.fromAddress;
+  const classification = document?.classification || 'other';
+  const classStyle = classificationLabels[classification] || classificationLabels.other;
+
+  // Check if proof is provided
+  const hasProofDocs = (draft.paymentProofDocumentIds?.length ?? 0) > 0;
+  const hasProofText = !!draft.paymentProofText;
+  const hasProof = hasProofDocs || hasProofText;
+
+  // Document count
+  const docCount = draft.documentIds?.length ?? 1;
+
+  // Extract sender name from email address (e.g., "info@vitality360.co.uk" -> "vitality360")
+  const senderName = fromAddress
+    ? fromAddress.includes('@')
+      ? fromAddress.split('@')[1]?.split('.')[0] || fromAddress
+      : fromAddress
+    : null;
 
   return (
     <div
       onClick={onClick}
       className={cn('bauhaus-card cursor-pointer', selected && 'ring-2 ring-bauhaus-blue')}
     >
-      <div className="flex items-start justify-between mb-3">
-        <span
-          className={cn(
-            'inline-block px-2 py-1 text-xs font-medium uppercase',
-            statusLabels[draft.status].color
-          )}
-        >
-          {statusLabels[draft.status].label}
-        </span>
-        <span className="text-xs text-bauhaus-gray">
+      {/* Header row: status + classification + date */}
+      <div className="flex items-start justify-between mb-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span
+            className={cn(
+              'inline-block px-2 py-0.5 text-xs font-medium uppercase',
+              statusLabels[draft.status].color
+            )}
+          >
+            {statusLabels[draft.status].label}
+          </span>
+          <span
+            className={cn(
+              'inline-block px-1.5 py-0.5 text-xs font-medium',
+              classStyle.color
+            )}
+          >
+            {classStyle.label}
+          </span>
+        </div>
+        <span className="text-xs text-bauhaus-gray flex-shrink-0">
           {draft.generatedAt ? formatDate(draft.generatedAt) : 'No date'}
         </span>
       </div>
-      <div className="space-y-2">
-        <div className="flex items-center gap-2 text-sm">
-          <FileText size={16} className="text-bauhaus-gray flex-shrink-0" />
-          {hasFile && document ? (
-            <a
-              href={getDocumentFileUrl(document.id)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-bauhaus-blue hover:underline truncate inline-flex items-center gap-1"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {filename}
-              <ExternalLink size={12} />
-            </a>
-          ) : (
-            <span className="truncate">{filename}</span>
-          )}
+
+      {/* Sender */}
+      {senderName && (
+        <div className="text-sm font-medium text-bauhaus-gray mb-1 truncate">
+          {senderName}
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          <Calendar size={16} className="text-bauhaus-gray flex-shrink-0" />
-          <span>
+      )}
+
+      {/* Subject / filename */}
+      <div className="mb-2">
+        {subject ? (
+          <p className="font-medium text-sm truncate" title={subject}>
+            {subject}
+          </p>
+        ) : (
+          <div className="flex items-center gap-2 text-sm">
+            <FileText size={14} className="text-bauhaus-gray flex-shrink-0" />
+            {hasFile && document ? (
+              <a
+                href={getDocumentFileUrl(document.id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-bauhaus-blue hover:underline truncate inline-flex items-center gap-1"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {filename}
+                <ExternalLink size={12} />
+              </a>
+            ) : (
+              <span className="truncate">{filename}</span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Bottom row: date, amount, proof status, doc count */}
+      <div className="flex items-center justify-between text-sm">
+        <div className="flex items-center gap-3">
+          <span className="text-bauhaus-gray">
             {draft.treatmentDate
               ? formatDate(draft.treatmentDate)
               : document?.date
               ? formatDate(document.date)
               : 'No date'}
           </span>
-        </div>
-        <div className="flex items-center gap-2 text-sm flex-wrap">
           <span className="font-bold">
             {formatCurrency(draft.payment.amount, draft.payment.currency)}
           </span>
-          {draft.payment.source === 'override' ? (
-            <span className="text-xs px-1.5 py-0.5 bg-green-100 text-green-700">Override</span>
-          ) : draft.payment.confidence ? (
-            <span className="text-xs text-bauhaus-gray">
-              ({draft.payment.confidence}% confidence)
+        </div>
+        <div className="flex items-center gap-2">
+          {/* Proof indicator */}
+          {draft.status === 'pending' && (
+            <span
+              className={cn(
+                'text-xs px-1.5 py-0.5 font-medium',
+                hasProof
+                  ? 'bg-emerald-100 text-emerald-700'
+                  : 'bg-red-100 text-red-700'
+              )}
+              title={hasProof ? 'Proof attached' : 'No proof of payment'}
+            >
+              {hasProof ? '✓ Proof' : '! No proof'}
             </span>
-          ) : null}
+          )}
+          {/* Doc count */}
+          {docCount > 1 && (
+            <span className="text-xs text-bauhaus-gray" title={`${docCount} documents attached`}>
+              {docCount} docs
+            </span>
+          )}
         </div>
       </div>
     </div>
