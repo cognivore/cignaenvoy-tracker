@@ -969,6 +969,32 @@ const UPLOADS_DIR = path.join(process.cwd(), "data", "uploads");
 // Ensure uploads directory exists
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
+const MIME_EXTENSIONS: Record<string, string> = {
+  "application/pdf": ".pdf",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+};
+
+function sanitizeFilenameBase(name: string): string {
+  const base = name.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9._-]/g, "");
+  const trimmed = base.replace(/^-+/, "").replace(/-+$/, "");
+  return trimmed || "upload";
+}
+
+function buildTimestampedFilename(originalName: string, mimeType: string): string {
+  const timestamp = Date.now();
+  const originalExt = path.extname(originalName);
+  const ext =
+    (originalExt && MIME_TYPES[originalExt.toLowerCase()] === mimeType
+      ? originalExt
+      : MIME_EXTENSIONS[mimeType]) || originalExt || ".bin";
+  const baseName = path.basename(originalName, originalExt || ext);
+  const safeBase = sanitizeFilenameBase(baseName);
+  return `${timestamp}-${safeBase}${ext}`;
+}
+
 /**
  * Parse multipart/form-data from request.
  * Simple implementation for single file upload.
@@ -1061,10 +1087,16 @@ async function handleProofUpload(
     return true;
   }
 
-  // Generate unique filename
-  const ext = path.extname(filename) || (mimeType === "application/pdf" ? ".pdf" : ".png");
-  const uniqueFilename = `proof-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
-  const filePath = path.join(UPLOADS_DIR, uniqueFilename);
+  // Generate timestamped, safe filename
+  const timestampedFilename = buildTimestampedFilename(filename, mimeType);
+  let uniqueFilename = timestampedFilename;
+  let filePath = path.join(UPLOADS_DIR, uniqueFilename);
+  if (fs.existsSync(filePath)) {
+    const ext = path.extname(timestampedFilename);
+    const base = path.basename(timestampedFilename, ext);
+    uniqueFilename = `${base}-${Math.random().toString(36).slice(2, 6)}${ext}`;
+    filePath = path.join(UPLOADS_DIR, uniqueFilename);
+  }
 
   // Save file
   fs.writeFileSync(filePath, buffer);
@@ -1072,7 +1104,7 @@ async function handleProofUpload(
   // Create MedicalDocument record
   const doc = await createMedicalDocument({
     sourceType: "manual_upload",
-    filename,
+    filename: uniqueFilename,
     attachmentPath: filePath,
     mimeType,
     fileSize: buffer.length,
