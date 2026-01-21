@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ExternalLink, FilePlus, FileText, RefreshCw, X, Archive, RotateCcw, Upload, Trash2 } from 'lucide-react';
 import { cn, formatCurrency, formatDate, truncate } from '@/lib/utils';
 import {
@@ -173,9 +173,8 @@ export default function DraftClaims() {
   const [selectedProofIds, setSelectedProofIds] = useState<string[]>([]);
   const [paymentProofNote, setPaymentProofNote] = useState('');
   const [uploadingProof, setUploadingProof] = useState(false);
-  const [autoSaving, setAutoSaving] = useState(false);
+  const [saving, setSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const loadSupportingData = async () => {
@@ -233,11 +232,11 @@ export default function DraftClaims() {
     }
   }
 
-  // Auto-save for pending drafts
-  const doAutoSave = useCallback(async () => {
+  // Save draft changes
+  async function handleSaveDraft() {
     if (!selectedDraft || selectedDraft.status !== 'pending') return;
 
-    setAutoSaving(true);
+    setSaving(true);
     try {
       const updated = await api.updateDraftClaim(selectedDraft.id, {
         illnessId: selectedIllnessId || undefined,
@@ -247,50 +246,14 @@ export default function DraftClaims() {
         paymentProofText: paymentProofNote.trim() || undefined,
       });
       upsertItem(updated);
+      setSelectedDraft(updated);
     } catch (err) {
-      console.error('Auto-save failed:', err);
+      console.error('Save failed:', err);
+      alert(`Save failed: ${err}`);
     } finally {
-      setAutoSaving(false);
+      setSaving(false);
     }
-  }, [
-    selectedDraft,
-    selectedIllnessId,
-    doctorNotes,
-    selectedCalendarIds,
-    selectedProofIds,
-    paymentProofNote,
-    upsertItem,
-  ]);
-
-  // Debounced auto-save when form state changes
-  useEffect(() => {
-    if (!selectedDraft || selectedDraft.status !== 'pending') return;
-
-    // Clear any pending auto-save
-    if (autoSaveTimeoutRef.current) {
-      clearTimeout(autoSaveTimeoutRef.current);
-    }
-
-    // Schedule auto-save after 1 second of inactivity
-    autoSaveTimeoutRef.current = setTimeout(() => {
-      doAutoSave();
-    }, 1000);
-
-    return () => {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-      }
-    };
-  }, [
-    selectedDraft?.id,
-    selectedDraft?.status,
-    selectedIllnessId,
-    doctorNotes,
-    selectedCalendarIds,
-    selectedProofIds,
-    paymentProofNote,
-    doAutoSave,
-  ]);
+  }
 
   const calendarDocs = useMemo(
     () => documents.filter((doc) => doc.sourceType === 'calendar'),
@@ -611,8 +574,17 @@ export default function DraftClaims() {
                   >
                     {statusLabels[selectedDraft.status].label}
                   </span>
-                  {autoSaving && (
-                    <span className="text-xs text-bauhaus-gray italic">Saving...</span>
+                  {selectedDraft.status === 'pending' && (
+                    <button
+                      onClick={handleSaveDraft}
+                      disabled={saving || processing !== null}
+                      className={cn(
+                        'px-2 py-1 text-xs font-medium bg-bauhaus-blue text-white hover:bg-bauhaus-blue/90 transition-colors',
+                        (saving || processing !== null) && 'opacity-60 cursor-not-allowed'
+                      )}
+                    >
+                      {saving ? 'Saving...' : 'Save'}
+                    </button>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
