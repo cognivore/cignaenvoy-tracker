@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ExternalLink, FilePlus, FileText, RefreshCw, X, Archive, RotateCcw, Upload, Trash2 } from 'lucide-react';
 import { cn, formatCurrency, formatDate, truncate } from '@/lib/utils';
 import {
@@ -173,7 +173,9 @@ export default function DraftClaims() {
   const [selectedProofIds, setSelectedProofIds] = useState<string[]>([]);
   const [paymentProofNote, setPaymentProofNote] = useState('');
   const [uploadingProof, setUploadingProof] = useState(false);
+  const [autoSaving, setAutoSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const loadSupportingData = async () => {
@@ -230,6 +232,65 @@ export default function DraftClaims() {
       setManualDate('');
     }
   }
+
+  // Auto-save for pending drafts
+  const doAutoSave = useCallback(async () => {
+    if (!selectedDraft || selectedDraft.status !== 'pending') return;
+
+    setAutoSaving(true);
+    try {
+      const updated = await api.updateDraftClaim(selectedDraft.id, {
+        illnessId: selectedIllnessId || undefined,
+        doctorNotes: doctorNotes.trim() || undefined,
+        calendarDocumentIds: selectedCalendarIds.length > 0 ? selectedCalendarIds : undefined,
+        paymentProofDocumentIds: selectedProofIds.length > 0 ? selectedProofIds : undefined,
+        paymentProofText: paymentProofNote.trim() || undefined,
+      });
+      upsertItem(updated);
+    } catch (err) {
+      console.error('Auto-save failed:', err);
+    } finally {
+      setAutoSaving(false);
+    }
+  }, [
+    selectedDraft,
+    selectedIllnessId,
+    doctorNotes,
+    selectedCalendarIds,
+    selectedProofIds,
+    paymentProofNote,
+    upsertItem,
+  ]);
+
+  // Debounced auto-save when form state changes
+  useEffect(() => {
+    if (!selectedDraft || selectedDraft.status !== 'pending') return;
+
+    // Clear any pending auto-save
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+    }
+
+    // Schedule auto-save after 1 second of inactivity
+    autoSaveTimeoutRef.current = setTimeout(() => {
+      doAutoSave();
+    }, 1000);
+
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+      }
+    };
+  }, [
+    selectedDraft?.id,
+    selectedDraft?.status,
+    selectedIllnessId,
+    doctorNotes,
+    selectedCalendarIds,
+    selectedProofIds,
+    paymentProofNote,
+    doAutoSave,
+  ]);
 
   const calendarDocs = useMemo(
     () => documents.filter((doc) => doc.sourceType === 'calendar'),
@@ -541,14 +602,19 @@ export default function DraftClaims() {
             <div className="bauhaus-card h-fit lg:sticky lg:top-8 max-h-[calc(100vh-120px)] flex flex-col">
               {/* Sticky header */}
               <div className="flex items-start justify-between mb-4 flex-shrink-0">
-                <span
-                  className={cn(
-                    'inline-block px-2 py-1 text-xs font-medium uppercase',
-                    statusLabels[selectedDraft.status].color
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'inline-block px-2 py-1 text-xs font-medium uppercase',
+                      statusLabels[selectedDraft.status].color
+                    )}
+                  >
+                    {statusLabels[selectedDraft.status].label}
+                  </span>
+                  {autoSaving && (
+                    <span className="text-xs text-bauhaus-gray italic">Saving...</span>
                   )}
-                >
-                  {statusLabels[selectedDraft.status].label}
-                </span>
+                </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-bauhaus-gray">ID: {selectedDraft.id}</span>
                   <button

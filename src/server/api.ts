@@ -82,7 +82,7 @@ import { CignaScraper } from "../services/cigna-scraper.js";
 import { extractAndPrepareAccounts } from "../services/account-extractor.js";
 import type { CreatePatientInput, UpdatePatientInput } from "../types/patient.js";
 import type { CreateIllnessInput, UpdateIllnessInput } from "../types/illness.js";
-import type { DraftClaimRange, DraftClaimDateSource } from "../types/draft-claim.js";
+import type { DraftClaim, DraftClaimRange, DraftClaimDateSource } from "../types/draft-claim.js";
 import type { MedicalDocument } from "../types/medical-document.js";
 import type {
   CreateArchiveRuleInput,
@@ -102,6 +102,7 @@ const routes = {
   GET: {} as Record<string, RouteHandler>,
   POST: {} as Record<string, RouteHandler>,
   PUT: {} as Record<string, RouteHandler>,
+  PATCH: {} as Record<string, RouteHandler>,
   DELETE: {} as Record<string, RouteHandler>,
 };
 
@@ -732,6 +733,67 @@ routes.POST["/api/draft-claims/:id/pending"] = async (_req, _res, params) => {
   return updated;
 };
 
+/** Partial update for draft claim (auto-save) */
+routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
+  const {
+    illnessId,
+    doctorNotes,
+    calendarDocumentIds,
+    paymentProofDocumentIds,
+    paymentProofText,
+  } = body as {
+    illnessId?: string;
+    doctorNotes?: string;
+    calendarDocumentIds?: string[];
+    paymentProofDocumentIds?: string[];
+    paymentProofText?: string;
+  };
+
+  const draft = await draftClaimsStorage.get(params.id!);
+  requireEntity(draft, "Draft claim");
+
+  // Only allow updates on pending drafts
+  if (draft.status !== "pending") {
+    httpError(400, "Can only update pending draft claims");
+  }
+
+  const updates: Partial<DraftClaim> = {};
+
+  if (illnessId !== undefined) {
+    if (illnessId) {
+      const illness = await illnessesStorage.get(illnessId);
+      requireEntity(illness, "Illness");
+    }
+    updates.illnessId = illnessId || undefined;
+  }
+
+  if (doctorNotes !== undefined) {
+    updates.doctorNotes = doctorNotes.trim() || undefined;
+  }
+
+  if (calendarDocumentIds !== undefined) {
+    const calendarIds = Array.isArray(calendarDocumentIds)
+      ? calendarDocumentIds.filter(Boolean)
+      : [];
+    updates.calendarDocumentIds = calendarIds.length > 0 ? calendarIds : undefined;
+  }
+
+  if (paymentProofDocumentIds !== undefined) {
+    const proofIds = Array.isArray(paymentProofDocumentIds)
+      ? paymentProofDocumentIds.filter(Boolean)
+      : [];
+    updates.paymentProofDocumentIds = proofIds.length > 0 ? proofIds : undefined;
+  }
+
+  if (paymentProofText !== undefined) {
+    updates.paymentProofText = paymentProofText.trim() || undefined;
+  }
+
+  const updated = await updateDraftClaim(params.id!, updates);
+  requireEntity(updated, "Draft claim");
+  return updated;
+};
+
 routes.POST["/api/draft-claims/run-matching"] = async () => {
   const drafts = await draftClaimsStorage.find((draft) => draft.status === "accepted");
   const documentIds = Array.from(new Set(drafts.flatMap((draft) => draft.documentIds)));
@@ -1078,7 +1140,7 @@ async function handleRequest(
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     });
     res.end();

@@ -462,6 +462,21 @@ export const api = {
     fetchJson<DraftClaim>(`/draft-claims/${id}/pending`, {
       method: "POST",
     }),
+  /** Auto-save partial updates to a pending draft claim */
+  updateDraftClaim: (
+    id: string,
+    input: {
+      illnessId?: string;
+      doctorNotes?: string;
+      calendarDocumentIds?: string[];
+      paymentProofDocumentIds?: string[];
+      paymentProofText?: string;
+    }
+  ) =>
+    fetchJson<DraftClaim>(`/draft-claims/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
   runDraftMatching: () =>
     fetchJson<{ created: number; assignments: DocumentClaimAssignment[] }>(
       "/draft-claims/run-matching",
