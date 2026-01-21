@@ -768,25 +768,57 @@ routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
   }
 
   if (doctorNotes !== undefined) {
-    updates.doctorNotes = doctorNotes.trim() || undefined;
+    const trimmedNotes = doctorNotes.trim();
+    updates.doctorNotes = trimmedNotes || undefined;
   }
 
-  if (calendarDocumentIds !== undefined) {
-    const calendarIds = Array.isArray(calendarDocumentIds)
-      ? calendarDocumentIds.filter(Boolean)
-      : [];
-    updates.calendarDocumentIds = calendarIds.length > 0 ? calendarIds : undefined;
+  const calendarIds =
+    calendarDocumentIds !== undefined
+      ? Array.isArray(calendarDocumentIds)
+        ? calendarDocumentIds.filter(Boolean)
+        : []
+      : undefined;
+  const proofIds =
+    paymentProofDocumentIds !== undefined
+      ? Array.isArray(paymentProofDocumentIds)
+        ? paymentProofDocumentIds.filter(Boolean)
+        : []
+      : undefined;
+
+  if (calendarIds !== undefined) {
+    updates.calendarDocumentIds = calendarIds;
   }
 
-  if (paymentProofDocumentIds !== undefined) {
-    const proofIds = Array.isArray(paymentProofDocumentIds)
-      ? paymentProofDocumentIds.filter(Boolean)
-      : [];
-    updates.paymentProofDocumentIds = proofIds.length > 0 ? proofIds : undefined;
+  if (proofIds !== undefined) {
+    updates.paymentProofDocumentIds = proofIds;
   }
 
   if (paymentProofText !== undefined) {
-    updates.paymentProofText = paymentProofText.trim() || undefined;
+    const trimmedProof = paymentProofText.trim();
+    updates.paymentProofText = trimmedProof || undefined;
+  }
+
+  if (calendarIds !== undefined || proofIds !== undefined) {
+    let nextDocumentIds = draft.documentIds;
+
+    if (calendarIds !== undefined) {
+      const removedCalendarIds = (draft.calendarDocumentIds ?? []).filter(
+        (id) => !calendarIds.includes(id)
+      );
+      nextDocumentIds = nextDocumentIds.filter((id) => !removedCalendarIds.includes(id));
+      nextDocumentIds = dedupeIds([...nextDocumentIds, ...calendarIds]);
+    }
+
+    if (proofIds !== undefined) {
+      const removedProofIds = (draft.paymentProofDocumentIds ?? []).filter(
+        (id) => !proofIds.includes(id)
+      );
+      nextDocumentIds = nextDocumentIds.filter((id) => !removedProofIds.includes(id));
+      nextDocumentIds = dedupeIds([...nextDocumentIds, ...proofIds]);
+    }
+
+    nextDocumentIds = dedupeIds([draft.primaryDocumentId, ...nextDocumentIds]);
+    updates.documentIds = nextDocumentIds;
   }
 
   const updated = await updateDraftClaim(params.id!, updates);

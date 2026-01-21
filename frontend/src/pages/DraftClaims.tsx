@@ -239,11 +239,11 @@ export default function DraftClaims() {
     setSaving(true);
     try {
       const updated = await api.updateDraftClaim(selectedDraft.id, {
-        illnessId: selectedIllnessId || undefined,
-        doctorNotes: doctorNotes.trim() || undefined,
-        calendarDocumentIds: selectedCalendarIds.length > 0 ? selectedCalendarIds : undefined,
-        paymentProofDocumentIds: selectedProofIds.length > 0 ? selectedProofIds : undefined,
-        paymentProofText: paymentProofNote.trim() || undefined,
+        illnessId: selectedIllnessId,
+        doctorNotes,
+        calendarDocumentIds: selectedCalendarIds,
+        paymentProofDocumentIds: selectedProofIds,
+        paymentProofText: paymentProofNote,
       });
       upsertItem(updated);
       setSelectedDraft(updated);
