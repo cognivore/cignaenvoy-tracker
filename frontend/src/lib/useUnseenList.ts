@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getCached, setCache } from "./cache";
 
 export interface UseUnseenListOptions<T> {
   fetcher: () => Promise<T[]>;
@@ -8,6 +9,8 @@ export interface UseUnseenListOptions<T> {
   enabled?: boolean;
   /** Unique key for localStorage persistence. If provided, seen IDs and cached items persist across refreshes. */
   cacheKey?: string;
+  /** TTL for in-memory cache (default: 5 minutes). Set to 0 to disable memory caching. */
+  cacheTtlMs?: number;
 }
 
 function loadFromStorage<V>(key: string): V | null {
@@ -37,20 +40,32 @@ export function useUnseenList<T extends { id: string }>(
     pollIntervalMs = 30000,
     enabled = true,
     cacheKey,
+    cacheTtlMs = 5 * 60 * 1000, // 5 minutes default
   } = options;
 
   const seenStorageKey = cacheKey ? `unseen-list-seen:${cacheKey}` : null;
   const itemsStorageKey = cacheKey ? `unseen-list-items:${cacheKey}` : null;
+  const memoryCacheKey = cacheKey ? `unseen-list:${cacheKey}` : null;
 
-  // Initialize from localStorage if cacheKey provided
+  // Check for fresh in-memory cache first (instant, no flicker)
+  const memoryCached = memoryCacheKey && cacheTtlMs > 0
+    ? getCached<T[]>(memoryCacheKey, cacheTtlMs)
+    : null;
+
+  // Initialize from memory cache > localStorage > empty
   const [items, setItems] = useState<T[]>(() => {
+    if (memoryCached) return memoryCached;
     if (!itemsStorageKey) return [];
     return loadFromStorage<T[]>(itemsStorageKey) ?? [];
   });
+
   // Check if we have cached items - if so, show them immediately (no spinner)
-  const hasCachedItems = itemsStorageKey
+  const hasCachedItems = memoryCached !== null || (itemsStorageKey
     ? (loadFromStorage<T[]>(itemsStorageKey)?.length ?? 0) > 0
-    : false;
+    : false);
+
+  // Skip initial fetch if we have fresh memory cache
+  const hasMemoryCacheRef = useRef(memoryCached !== null);
 
   const [loading, setLoading] = useState(!hasCachedItems);
   const [error, setError] = useState<Error | null>(null);
@@ -78,7 +93,10 @@ export function useUnseenList<T extends { id: string }>(
       const sorted = sortItems(fetched);
       setItems(sorted);
 
-      // Persist items to localStorage
+      // Persist items to memory cache and localStorage
+      if (memoryCacheKey && cacheTtlMs > 0) {
+        setCache(memoryCacheKey, sorted);
+      }
       if (itemsStorageKey) {
         saveToStorage(itemsStorageKey, sorted);
       }
@@ -117,7 +135,7 @@ export function useUnseenList<T extends { id: string }>(
         return nextUnseen;
       });
     },
-    [getId, sortItems, itemsStorageKey, seenStorageKey]
+    [getId, sortItems, itemsStorageKey, seenStorageKey, memoryCacheKey, cacheTtlMs]
   );
 
   const refresh = useCallback(async () => {
@@ -146,7 +164,10 @@ export function useUnseenList<T extends { id: string }>(
         const next = sortItems(updater(prev));
         const nextIds = new Set(next.map(getId));
         knownIdsRef.current = nextIds;
-        // Persist
+        // Persist to memory cache, localStorage
+        if (memoryCacheKey && cacheTtlMs > 0) {
+          setCache(memoryCacheKey, next);
+        }
         if (seenStorageKey) {
           saveToStorage(seenStorageKey, Array.from(nextIds));
         }
@@ -162,7 +183,7 @@ export function useUnseenList<T extends { id: string }>(
         return next;
       });
     },
-    [getId, sortItems, seenStorageKey, itemsStorageKey]
+    [getId, sortItems, seenStorageKey, itemsStorageKey, memoryCacheKey, cacheTtlMs]
   );
 
   const upsertItem = useCallback(
@@ -194,7 +215,12 @@ export function useUnseenList<T extends { id: string }>(
 
   useEffect(() => {
     if (!enabled) return;
-    refresh();
+    // Skip initial fetch if we have fresh memory cache (instant navigation)
+    if (!hasMemoryCacheRef.current) {
+      refresh();
+    }
+    // Clear the flag so subsequent mounts will fetch
+    hasMemoryCacheRef.current = false;
     if (pollIntervalMs <= 0) return;
     const interval = setInterval(refresh, pollIntervalMs);
     return () => clearInterval(interval);

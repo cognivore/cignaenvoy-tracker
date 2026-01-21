@@ -209,7 +209,7 @@ interface FieldMapping {
 
 /**
  * Create a SQLite repository for a specific table.
- * 
+ *
  * @param tableName - The database table name
  * @param fieldMappings - Array of field mappings from entity properties to database columns
  */

@@ -512,9 +512,9 @@ export class DocumentProcessor {
             try {
               const doc = this.timing
                 ? await this.timing.time("processAttachment", () =>
-                    this.processAttachment(email, attachment),
-                    { filename: attachment.filename }
-                  )
+                  this.processAttachment(email, attachment),
+                  { filename: attachment.filename }
+                )
                 : await this.processAttachment(email, attachment);
               if (doc) {
                 documents.push(doc);
@@ -732,9 +732,9 @@ export class DocumentProcessor {
 
       const searchResult = this.timing
         ? await this.timing.time("searchEmailsFTS", () =>
-            this.client.searchEmailsFTS(query, options),
-            { query, afterDate, beforeDate }
-          )
+          this.client.searchEmailsFTS(query, options),
+          { query, afterDate, beforeDate }
+        )
         : await this.client.searchEmailsFTS(query, options);
 
       if (searchResult.status !== "success" || !searchResult.results) {
@@ -804,9 +804,9 @@ export class DocumentProcessor {
 
       let searchResult = this.timing
         ? await this.timing.time("searchEmailsFTS", () =>
-            this.client.searchEmailsFTS(query, { ...baseOptions, limit: initialLimit }),
-            { query }
-          )
+          this.client.searchEmailsFTS(query, { ...baseOptions, limit: initialLimit }),
+          { query }
+        )
         : await this.client.searchEmailsFTS(query, { ...baseOptions, limit: initialLimit });
 
       const totalMatches = searchResult.total_matches ?? searchResult.count ?? 0;
@@ -823,9 +823,9 @@ export class DocumentProcessor {
       ) {
         searchResult = this.timing
           ? await this.timing.time("searchEmailsFTS", () =>
-              this.client.searchEmailsFTS(query, { ...baseOptions, limit: desiredLimit }),
-              { query, fullHistory: true }
-            )
+            this.client.searchEmailsFTS(query, { ...baseOptions, limit: desiredLimit }),
+            { query, fullHistory: true }
+          )
           : await this.client.searchEmailsFTS(query, { ...baseOptions, limit: desiredLimit });
       }
 
@@ -1099,9 +1099,9 @@ export class DocumentProcessor {
 
       let searchResult = this.timing
         ? await this.timing.time("searchCalendarFTS", () =>
-            this.client.searchCalendarFTS(query, { ...baseOptions, limit: initialLimit }),
-            { query }
-          )
+          this.client.searchCalendarFTS(query, { ...baseOptions, limit: initialLimit }),
+          { query }
+        )
         : await this.client.searchCalendarFTS(query, { ...baseOptions, limit: initialLimit });
 
       const totalMatches = searchResult.total_matches ?? searchResult.count ?? 0;
@@ -1118,9 +1118,9 @@ export class DocumentProcessor {
       ) {
         searchResult = this.timing
           ? await this.timing.time("searchCalendarFTS", () =>
-              this.client.searchCalendarFTS(query, { ...baseOptions, limit: desiredLimit }),
-              { query, fullHistory: true }
-            )
+            this.client.searchCalendarFTS(query, { ...baseOptions, limit: desiredLimit }),
+            { query, fullHistory: true }
+          )
           : await this.client.searchCalendarFTS(query, { ...baseOptions, limit: desiredLimit });
       }
 
