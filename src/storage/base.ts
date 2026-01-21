@@ -55,6 +55,9 @@ export interface StorageOperations<T extends { id: string }> {
 
   /** Find entities matching a predicate */
   find(predicate: (entity: T) => boolean): Promise<T[]>;
+
+  /** Count all entities */
+  count(): Promise<number>;
 }
 
 /**
@@ -138,6 +141,18 @@ export function createStorage<T extends { id: string }>(
     async find(predicate: (entity: T) => boolean): Promise<T[]> {
       const all = await this.getAll();
       return all.filter(predicate);
+    },
+
+    async count(): Promise<number> {
+      try {
+        const files = await fs.promises.readdir(dir);
+        return files.filter((f) => f.endsWith(".json")).length;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          return 0;
+        }
+        throw err;
+      }
     },
   };
 }

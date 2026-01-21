@@ -1,7 +1,7 @@
 /**
  * Medical Documents Storage
  *
- * JSON file storage for medical documents from email/attachment dumps.
+ * Storage for medical documents with support for JSON files or SQLite backend.
  */
 
 import type {
@@ -15,16 +15,49 @@ import {
   STORAGE_DIRS,
   generateId,
   dateReviver,
+  type StorageOperations,
 } from "./base.js";
+import { getStorageBackend } from "./repository.js";
 import { hasPaymentSignal } from "../services/payment-signal.js";
+
+// Lazy-load SQLite to avoid import errors when not using it
+let sqliteModule: typeof import("./sqlite.js") | null = null;
+
+async function getSqliteModule() {
+  if (!sqliteModule) {
+    sqliteModule = await import("./sqlite.js");
+  }
+  return sqliteModule;
+}
+
+/**
+ * Get the appropriate storage backend.
+ */
+function getDocumentsStorage(): StorageOperations<MedicalDocument> {
+  const backend = getStorageBackend();
+  if (backend === "sqlite") {
+    // Use SQLite repository (lazy-loaded synchronously for backwards compatibility)
+    // Note: For full async support, callers should use the repository directly
+    const sqlite = require("./sqlite.js") as typeof import("./sqlite.js");
+    return sqlite.createSqliteRepository<MedicalDocument>("documents", [
+      { column: "email_id", property: "emailId" },
+      { column: "attachment_path", property: "attachmentPath" },
+      { column: "calendar_event_id", property: "calendarEventId" },
+      { column: "source_type", property: "sourceType" },
+      { column: "account", property: "account" },
+      { column: "date", property: "date" },
+      { column: "classification", property: "classification" },
+      { column: "archived_at", property: "archivedAt" },
+      { column: "processed_at", property: "processedAt" },
+    ]) as StorageOperations<MedicalDocument>;
+  }
+  return createStorage<MedicalDocument>(STORAGE_DIRS.documents, dateReviver);
+}
 
 /**
  * Storage operations for medical documents.
  */
-export const documentsStorage = createStorage<MedicalDocument>(
-  STORAGE_DIRS.documents,
-  dateReviver
-);
+export const documentsStorage = getDocumentsStorage();
 
 /**
  * Create a new medical document record.
@@ -118,20 +151,30 @@ export async function unarchiveDocument(
 
 /**
  * Find document by email ID.
+ * Uses indexed lookup when SQLite backend is enabled.
  */
 export async function findDocumentByEmailId(
   emailId: string
 ): Promise<MedicalDocument | null> {
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = await getSqliteModule();
+    return sqlite.findDocumentByEmailIdSqlite(emailId) as Promise<MedicalDocument | null>;
+  }
   const docs = await documentsStorage.find((d) => d.emailId === emailId);
   return docs[0] ?? null;
 }
 
 /**
  * Find documents by attachment path.
+ * Uses indexed lookup when SQLite backend is enabled.
  */
 export async function findDocumentByAttachmentPath(
   attachmentPath: string
 ): Promise<MedicalDocument | null> {
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = await getSqliteModule();
+    return sqlite.findDocumentByAttachmentPathSqlite(attachmentPath) as Promise<MedicalDocument | null>;
+  }
   const docs = await documentsStorage.find(
     (d) => d.attachmentPath === attachmentPath
   );
@@ -140,10 +183,15 @@ export async function findDocumentByAttachmentPath(
 
 /**
  * Find document by calendar event ID.
+ * Uses indexed lookup when SQLite backend is enabled.
  */
 export async function findDocumentByCalendarEventId(
   calendarEventId: string
 ): Promise<MedicalDocument | null> {
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = await getSqliteModule();
+    return sqlite.findDocumentByCalendarEventIdSqlite(calendarEventId) as Promise<MedicalDocument | null>;
+  }
   const docs = await documentsStorage.find(
     (d) => d.calendarEventId === calendarEventId
   );

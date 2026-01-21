@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { FileText, Mail, Calendar, Tag, DollarSign, RefreshCw, Eye, ExternalLink, MapPin, Users, Clock, User, Edit2, Check, X, Archive, Inbox, Trash2, FilePlus, Filter } from 'lucide-react';
+import { FileText, Mail, Calendar, Tag, DollarSign, RefreshCw, Eye, ExternalLink, MapPin, Users, Clock, User, Edit2, Check, X, Archive, Trash2, FilePlus, Filter } from 'lucide-react';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import {
   FilterTabs,

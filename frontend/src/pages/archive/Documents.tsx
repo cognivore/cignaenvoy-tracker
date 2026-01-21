@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { FileText, Mail, Calendar, Tag, RefreshCw, Inbox, ExternalLink } from 'lucide-react';
-import { cn, formatCurrency, formatDate } from '@/lib/utils';
+import { cn, formatDate } from '@/lib/utils';
 import { EmptyState, LoadingSpinner } from '@/components';
 import { api, getDocumentFileUrl, type MedicalDocument } from '@/lib/api';
 import { useUnseenList } from '@/lib/useUnseenList';
@@ -21,7 +21,6 @@ export default function ArchivedDocuments() {
     items: documents,
     loading,
     refresh,
-    upsertItem,
     removeItem,
   } = useUnseenList<MedicalDocument>({
     fetcher: async () => {
@@ -38,7 +37,7 @@ export default function ArchivedDocuments() {
   async function handleUnarchive(doc: MedicalDocument) {
     setUnarchiving(true);
     try {
-      const updated = await api.setDocumentArchived(doc.id, { archived: false });
+      await api.setDocumentArchived(doc.id, { archived: false });
       removeItem(doc.id);
       if (selectedDoc?.id === doc.id) {
         setSelectedDoc(null);

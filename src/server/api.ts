@@ -66,7 +66,7 @@ import {
   getArchivedIllnesses,
   getActiveIllnessesAll,
 } from "../storage/illnesses.js";
-import { ensureStorageDirs } from "../storage/index.js";
+import { ensureStorageDirs, getStorageBackend, getStatsFast } from "../storage/index.js";
 import { DocumentProcessor } from "../services/document-processor.js";
 import { generateDraftClaims } from "../services/draft-claim-generator.js";
 import { promoteDocumentToDraftClaim } from "../services/draft-claim-promoter.js";
@@ -825,6 +825,12 @@ routes.POST["/api/process/scrape"] = async (_req, _res, _params, body) => {
 // =============================================
 
 routes.GET["/api/stats"] = async () => {
+  // Use fast SQL aggregation when SQLite is enabled
+  if (getStorageBackend() === "sqlite") {
+    return getStatsFast();
+  }
+
+  // Fallback to JSON file loading (slow)
   const [claims, documents, assignments, draftClaims] = await Promise.all([
     claimsStorage.getAll(),
     documentsStorage.getAll(),

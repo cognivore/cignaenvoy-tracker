@@ -11,7 +11,6 @@ export default function Claims() {
     items: claims,
     loading,
     unseenIds,
-    hasUnseen,
     refresh: refreshClaims,
     markAllSeen,
     removeItem,

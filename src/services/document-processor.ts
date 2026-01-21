@@ -40,6 +40,21 @@ import {
 import { ensureStorageDirs } from "../storage/index.js";
 import { buildArchiveReason, findMatchingArchiveRule } from "./archive-rules.js";
 import { PAYMENT_PROOF_KEYWORDS } from "./payment-proof.js";
+import {
+  TimingCollector,
+  formatRunMetrics,
+  type RunMetrics,
+} from "./timing.js";
+import {
+  mapWithConcurrency,
+  flatMapWithConcurrencySettled,
+  Semaphore,
+} from "./concurrency.js";
+import {
+  getProcessingState,
+  updateProcessingState,
+  generateDateWindows,
+} from "../storage/processing-state.js";
 
 /**
  * Amount extraction patterns.
@@ -308,6 +323,16 @@ export interface ProcessorConfig {
   skipExisting?: boolean;
   /** Process calendar events (default: true) */
   processCalendar?: boolean;
+  /** Concurrency for search queries (default: 2) */
+  queryConcurrency?: number;
+  /** Concurrency for email processing (default: 8) */
+  emailConcurrency?: number;
+  /** Concurrency for OCR operations (default: 2) */
+  ocrConcurrency?: number;
+  /** Use incremental processing with date windows (default: false) */
+  incremental?: boolean;
+  /** Window size in days for incremental processing (default: 30) */
+  windowDays?: number;
 }
 
 const DEFAULT_SEARCH_QUERIES = [
@@ -349,12 +374,20 @@ const DEFAULT_CALENDAR_QUERIES = [
 
 const ATTACHMENT_PROCESSOR_VERSION = 2;
 
+// Default concurrency limits
+const DEFAULT_QUERY_CONCURRENCY = 2;
+const DEFAULT_EMAIL_CONCURRENCY = 8;
+const DEFAULT_OCR_CONCURRENCY = 2;
+
 /**
  * Document processor service.
  */
 export class DocumentProcessor {
   private client: QwenClient;
   private config: ProcessorConfig;
+  private timing: TimingCollector | null = null;
+  private lastRunMetrics: RunMetrics | null = null;
+  private ocrSemaphore: Semaphore;
 
   constructor(config: ProcessorConfig = {}) {
     this.client = config.client ?? qwenClient;
@@ -364,6 +397,11 @@ export class DocumentProcessor {
       skipExisting: config.skipExisting ?? true,
       processCalendar: config.processCalendar ?? true,
       fullHistory: config.fullHistory ?? true,
+      queryConcurrency: config.queryConcurrency ?? DEFAULT_QUERY_CONCURRENCY,
+      emailConcurrency: config.emailConcurrency ?? DEFAULT_EMAIL_CONCURRENCY,
+      ocrConcurrency: config.ocrConcurrency ?? DEFAULT_OCR_CONCURRENCY,
+      incremental: config.incremental ?? false,
+      windowDays: config.windowDays ?? 30,
     };
 
     if (config.accounts) {
@@ -375,6 +413,9 @@ export class DocumentProcessor {
     if (config.maxCalendarEventsPerQuery !== undefined) {
       this.config.maxCalendarEventsPerQuery = config.maxCalendarEventsPerQuery;
     }
+
+    // OCR semaphore to limit concurrent OCR operations
+    this.ocrSemaphore = new Semaphore(this.config.ocrConcurrency!);
 
     // Ensure storage directories exist
     ensureStorageDirs();
@@ -463,11 +504,18 @@ export class DocumentProcessor {
     if (email.has_attachments) {
       try {
         // Fetch full email to get attachment details
-        const fullEmail = await this.client.getEmail(email.id, email.account);
+        const fullEmail = this.timing
+          ? await this.timing.time("getEmail", () => this.client.getEmail(email.id, email.account))
+          : await this.client.getEmail(email.id, email.account);
         if (fullEmail.status === "success" && fullEmail.email?.attachments) {
           for (const attachment of fullEmail.email.attachments) {
             try {
-              const doc = await this.processAttachment(email, attachment);
+              const doc = this.timing
+                ? await this.timing.time("processAttachment", () =>
+                    this.processAttachment(email, attachment),
+                    { filename: attachment.filename }
+                  )
+                : await this.processAttachment(email, attachment);
               if (doc) {
                 documents.push(doc);
               }
@@ -585,8 +633,12 @@ export class DocumentProcessor {
       }
     }
 
-    // OCR the attachment
-    const ocrResult = await this.client.ocrDocument(attachmentPath);
+    // OCR the attachment (rate-limited via semaphore)
+    const ocrResult = await this.ocrSemaphore.withPermit(async () => {
+      return this.timing
+        ? await this.timing.time("ocrDocument", () => this.client.ocrDocument(attachmentPath), { attachmentPath })
+        : await this.client.ocrDocument(attachmentPath);
+    });
 
     if (ocrResult.status !== "success" || !ocrResult.text) {
       console.warn(`OCR failed for ${attachment.filename}:`, ocrResult.error);
@@ -657,72 +709,169 @@ export class DocumentProcessor {
    * entities ranked by relevance. This is the preferred method for discovery.
    */
   async processEmailsFromSearch(): Promise<MedicalDocument[]> {
-    const allDocuments: MedicalDocument[] = [];
     const processedEmailIds = new Set<string>();
+    const queries = this.config.searchQueries ?? [];
+    const account = this.config.accounts?.[0];
 
-    for (const query of this.config.searchQueries ?? []) {
-      try {
-        const baseOptions: { account?: string; limit?: number } = {};
-        if (this.config.accounts?.[0]) {
-          baseOptions.account = this.config.accounts[0];
-        }
+    // Helper to search a single query in a date window
+    const searchQueryWindow = async (
+      query: string,
+      afterDate?: string,
+      beforeDate?: string
+    ): Promise<EmailSearchResult[]> => {
+      const options: {
+        account?: string;
+        limit?: number;
+        afterDate?: string;
+        beforeDate?: string;
+      } = { limit: 100 }; // FTS has 100 result cap per query
 
-        // Use FTS endpoint for BM25-ranked search with complete email entities
-        const initialLimit = this.config.fullHistory
-          ? 1
-          : this.config.maxEmailsPerQuery ?? 1000;
+      if (account) options.account = account;
+      if (afterDate) options.afterDate = afterDate;
+      if (beforeDate) options.beforeDate = beforeDate;
 
-        let searchResult = await this.client.searchEmailsFTS(query, {
-          ...baseOptions,
-          limit: initialLimit,
-        });
+      const searchResult = this.timing
+        ? await this.timing.time("searchEmailsFTS", () =>
+            this.client.searchEmailsFTS(query, options),
+            { query, afterDate, beforeDate }
+          )
+        : await this.client.searchEmailsFTS(query, options);
 
-        const totalMatches = searchResult.total_matches ?? searchResult.count ?? 0;
-        const desiredLimit = this.config.fullHistory
-          ? (this.config.maxEmailsPerQuery
-            ? Math.min(this.config.maxEmailsPerQuery, totalMatches)
-            : totalMatches)
-          : this.config.maxEmailsPerQuery ?? 1000;
+      if (searchResult.status !== "success" || !searchResult.results) {
+        console.warn(`Search failed for query "${query}":`, searchResult.error);
+        return [];
+      }
 
-        if (
-          this.config.fullHistory &&
-          totalMatches > 0 &&
-          (searchResult.results?.length ?? 0) < desiredLimit
-        ) {
-          searchResult = await this.client.searchEmailsFTS(query, {
-            ...baseOptions,
-            limit: desiredLimit,
-          });
-        }
-
-        if (searchResult.status !== "success" || !searchResult.results) {
-          console.warn(`Search failed for query "${query}":`, searchResult.error);
-          continue;
-        }
-
+      if (afterDate || beforeDate) {
+        console.log(
+          `[FTS] Query "${query}" [${afterDate ?? "start"} → ${beforeDate ?? "now"}]: ${searchResult.count ?? 0} results`
+        );
+      } else {
         console.log(
           `[FTS] Query "${query}": ${searchResult.count ?? 0} results ` +
           `(${searchResult.total_matches ?? 0} total matches, index size: ${searchResult.index_size ?? 0})`
         );
+      }
 
-        for (const email of searchResult.results) {
-          // Skip already processed in this run
-          if (processedEmailIds.has(email.id)) {
-            continue;
-          }
-          processedEmailIds.add(email.id);
+      return searchResult.results;
+    };
 
-          try {
-            const docs = await this.processEmail(email);
-            allDocuments.push(...docs);
-          } catch (err) {
-            console.error(`Failed to process email ${email.id}:`, err);
+    // Helper to process a single query (with optional date windowing)
+    const processQuery = async (query: string): Promise<EmailSearchResult[]> => {
+      if (this.config.incremental) {
+        // Incremental mode: use date windows to work around FTS 100-result limit
+        const state = await getProcessingState(query, account);
+        const windows = generateDateWindows(state?.lastProcessedDate ?? null, this.config.windowDays!);
+
+        if (windows.length === 0) {
+          // Already up to date
+          console.log(`[FTS] Query "${query}": already up to date`);
+          return [];
+        }
+
+        console.log(`[FTS] Query "${query}": processing ${windows.length} date windows incrementally`);
+
+        // Process windows sequentially to track progress
+        const allResults: EmailSearchResult[] = [];
+        let latestDate: Date | null = null;
+
+        for (const window of windows) {
+          const results = await searchQueryWindow(query, window.afterDate, window.beforeDate);
+          allResults.push(...results);
+
+          // Track latest email date for state update
+          for (const email of results) {
+            const emailDate = new Date(email.date);
+            if (!latestDate || emailDate > latestDate) {
+              latestDate = emailDate;
+            }
           }
         }
-      } catch (err) {
-        console.error(`Search failed for query "${query}":`, err);
+
+        // Update processing state with latest date
+        if (latestDate) {
+          await updateProcessingState(query, account, latestDate);
+        }
+
+        return allResults;
       }
-    }
+
+      // Full history mode: use the original approach
+      const baseOptions: { account?: string; limit?: number } = {};
+      if (account) baseOptions.account = account;
+
+      const initialLimit = this.config.fullHistory ? 1 : this.config.maxEmailsPerQuery ?? 1000;
+
+      let searchResult = this.timing
+        ? await this.timing.time("searchEmailsFTS", () =>
+            this.client.searchEmailsFTS(query, { ...baseOptions, limit: initialLimit }),
+            { query }
+          )
+        : await this.client.searchEmailsFTS(query, { ...baseOptions, limit: initialLimit });
+
+      const totalMatches = searchResult.total_matches ?? searchResult.count ?? 0;
+      const desiredLimit = this.config.fullHistory
+        ? (this.config.maxEmailsPerQuery
+          ? Math.min(this.config.maxEmailsPerQuery, totalMatches)
+          : totalMatches)
+        : this.config.maxEmailsPerQuery ?? 1000;
+
+      if (
+        this.config.fullHistory &&
+        totalMatches > 0 &&
+        (searchResult.results?.length ?? 0) < desiredLimit
+      ) {
+        searchResult = this.timing
+          ? await this.timing.time("searchEmailsFTS", () =>
+              this.client.searchEmailsFTS(query, { ...baseOptions, limit: desiredLimit }),
+              { query, fullHistory: true }
+            )
+          : await this.client.searchEmailsFTS(query, { ...baseOptions, limit: desiredLimit });
+      }
+
+      if (searchResult.status !== "success" || !searchResult.results) {
+        console.warn(`Search failed for query "${query}":`, searchResult.error);
+        return [];
+      }
+
+      console.log(
+        `[FTS] Query "${query}": ${searchResult.count ?? 0} results ` +
+        `(${searchResult.total_matches ?? 0} total matches, index size: ${searchResult.index_size ?? 0})`
+      );
+
+      return searchResult.results;
+    };
+
+    // Process queries with limited concurrency
+    const queryResults = await flatMapWithConcurrencySettled(
+      queries,
+      this.config.queryConcurrency!,
+      processQuery,
+      (query, err) => console.error(`Search failed for query "${query}":`, err)
+    );
+
+    // Deduplicate emails by ID
+    const uniqueEmails = queryResults.filter((email) => {
+      if (processedEmailIds.has(email.id)) {
+        return false;
+      }
+      processedEmailIds.add(email.id);
+      return true;
+    });
+
+    console.log(`[FTS] Processing ${uniqueEmails.length} unique emails (concurrency: ${this.config.emailConcurrency})`);
+
+    // Process emails with higher concurrency
+    const allDocuments = await flatMapWithConcurrencySettled(
+      uniqueEmails,
+      this.config.emailConcurrency!,
+      async (email) => {
+        return this.timing
+          ? await this.timing.time("processEmail", () => this.processEmail(email))
+          : await this.processEmail(email);
+      },
+      (email, err) => console.error(`Failed to process email ${email.id}:`, err)
+    );
 
     return allDocuments;
   }
@@ -934,74 +1083,103 @@ export class DocumentProcessor {
    * entities ranked by relevance.
    */
   async processCalendarEventsFromSearch(): Promise<MedicalDocument[]> {
-    const allDocuments: MedicalDocument[] = [];
     const processedEventIds = new Set<string>();
+    const queries = this.config.calendarQueries ?? [];
 
-    for (const query of this.config.calendarQueries ?? []) {
-      try {
-        const baseOptions: { account?: string; limit?: number } = {};
-        if (this.config.accounts?.[0]) {
-          baseOptions.account = this.config.accounts[0];
-        }
+    // Helper to process a single query
+    const processQuery = async (query: string): Promise<CalendarEventSearchResult[]> => {
+      const baseOptions: { account?: string; limit?: number } = {};
+      if (this.config.accounts?.[0]) {
+        baseOptions.account = this.config.accounts[0];
+      }
 
-        const initialLimit = this.config.fullHistory
-          ? 1
-          : this.config.maxCalendarEventsPerQuery ?? 1000;
+      const initialLimit = this.config.fullHistory
+        ? 1
+        : this.config.maxCalendarEventsPerQuery ?? 1000;
 
-        let searchResult = await this.client.searchCalendarFTS(query, {
-          ...baseOptions,
-          limit: initialLimit,
-        });
+      let searchResult = this.timing
+        ? await this.timing.time("searchCalendarFTS", () =>
+            this.client.searchCalendarFTS(query, { ...baseOptions, limit: initialLimit }),
+            { query }
+          )
+        : await this.client.searchCalendarFTS(query, { ...baseOptions, limit: initialLimit });
 
-        const totalMatches = searchResult.total_matches ?? searchResult.count ?? 0;
-        const desiredLimit = this.config.fullHistory
-          ? (this.config.maxCalendarEventsPerQuery
-            ? Math.min(this.config.maxCalendarEventsPerQuery, totalMatches)
-            : totalMatches)
-          : this.config.maxCalendarEventsPerQuery ?? 1000;
+      const totalMatches = searchResult.total_matches ?? searchResult.count ?? 0;
+      const desiredLimit = this.config.fullHistory
+        ? (this.config.maxCalendarEventsPerQuery
+          ? Math.min(this.config.maxCalendarEventsPerQuery, totalMatches)
+          : totalMatches)
+        : this.config.maxCalendarEventsPerQuery ?? 1000;
 
-        if (
-          this.config.fullHistory &&
-          totalMatches > 0 &&
-          (searchResult.results?.length ?? 0) < desiredLimit
-        ) {
-          searchResult = await this.client.searchCalendarFTS(query, {
-            ...baseOptions,
-            limit: desiredLimit,
-          });
-        }
+      if (
+        this.config.fullHistory &&
+        totalMatches > 0 &&
+        (searchResult.results?.length ?? 0) < desiredLimit
+      ) {
+        searchResult = this.timing
+          ? await this.timing.time("searchCalendarFTS", () =>
+              this.client.searchCalendarFTS(query, { ...baseOptions, limit: desiredLimit }),
+              { query, fullHistory: true }
+            )
+          : await this.client.searchCalendarFTS(query, { ...baseOptions, limit: desiredLimit });
+      }
 
-        if (searchResult.status !== "success" || !searchResult.results) {
-          console.warn(
-            `Calendar search failed for query "${query}":`,
-            searchResult.error
-          );
-          continue;
-        }
-
-        console.log(
-          `[Calendar FTS] Query "${query}": ${searchResult.count ?? 0} results ` +
-          `(${searchResult.total_matches ?? 0} total matches)`
+      if (searchResult.status !== "success" || !searchResult.results) {
+        console.warn(
+          `Calendar search failed for query "${query}":`,
+          searchResult.error
         );
+        return [];
+      }
 
-        for (const event of searchResult.results) {
-          // Skip already processed in this run
-          if (processedEventIds.has(event.id)) {
-            continue;
-          }
-          processedEventIds.add(event.id);
+      console.log(
+        `[Calendar FTS] Query "${query}": ${searchResult.count ?? 0} results ` +
+        `(${searchResult.total_matches ?? 0} total matches)`
+      );
 
-          try {
-            const doc = await this.processCalendarEvent(event);
-            if (doc) {
-              allDocuments.push(doc);
-            }
-          } catch (err) {
-            console.error(`Failed to process calendar event ${event.id}:`, err);
-          }
+      return searchResult.results;
+    };
+
+    // Process queries with limited concurrency
+    const queryResults = await flatMapWithConcurrencySettled(
+      queries,
+      this.config.queryConcurrency!,
+      processQuery,
+      (query, err) => console.error(`Calendar search failed for query "${query}":`, err)
+    );
+
+    // Deduplicate events by ID
+    const uniqueEvents = queryResults.filter((event) => {
+      if (processedEventIds.has(event.id)) {
+        return false;
+      }
+      processedEventIds.add(event.id);
+      return true;
+    });
+
+    console.log(`[Calendar FTS] Processing ${uniqueEvents.length} unique events`);
+
+    // Process calendar events (no attachments, so can use higher concurrency)
+    const allDocuments: MedicalDocument[] = [];
+    const docs = await mapWithConcurrency(
+      uniqueEvents,
+      this.config.emailConcurrency!, // Reuse email concurrency for events
+      async (event) => {
+        try {
+          const doc = this.timing
+            ? await this.timing.time("processCalendarEvent", () => this.processCalendarEvent(event))
+            : await this.processCalendarEvent(event);
+          return doc;
+        } catch (err) {
+          console.error(`Failed to process calendar event ${event.id}:`, err);
+          return null;
         }
-      } catch (err) {
-        console.error(`Calendar search failed for query "${query}":`, err);
+      }
+    );
+
+    for (const doc of docs) {
+      if (doc) {
+        allDocuments.push(doc);
       }
     }
 
@@ -1011,24 +1189,42 @@ export class DocumentProcessor {
   /**
    * Run the full document processing workflow.
    */
-  async run(): Promise<MedicalDocument[]> {
+  async run(trigger: string = "manual"): Promise<MedicalDocument[]> {
+    this.timing = new TimingCollector(trigger);
     console.log("Starting document processing...");
 
     // Process emails from search
-    const emailDocs = await this.processEmailsFromSearch();
+    const emailDocs = await this.timing.time(
+      "processEmailsFromSearch",
+      () => this.processEmailsFromSearch()
+    );
     console.log(`Processed ${emailDocs.length} email/attachment documents`);
 
     // Process calendar events if enabled
     let calendarDocs: MedicalDocument[] = [];
     if (this.config.processCalendar) {
-      calendarDocs = await this.processCalendarEventsFromSearch();
+      calendarDocs = await this.timing.time(
+        "processCalendarEventsFromSearch",
+        () => this.processCalendarEventsFromSearch()
+      );
       console.log(`Processed ${calendarDocs.length} calendar documents`);
     }
 
     const allDocs = [...emailDocs, ...calendarDocs];
     console.log(`Total: ${allDocs.length} medical documents processed`);
 
+    // Finalize and log metrics
+    this.lastRunMetrics = this.timing.finalize(allDocs.length);
+    console.log(formatRunMetrics(this.lastRunMetrics));
+
     return allDocs;
+  }
+
+  /**
+   * Get metrics from the last run.
+   */
+  getLastRunMetrics(): RunMetrics | null {
+    return this.lastRunMetrics;
   }
 }
 
