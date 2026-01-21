@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ExternalLink, FilePlus, FileText, RefreshCw, X, Archive, RotateCcw, Upload, Trash2 } from 'lucide-react';
 import { cn, formatCurrency, formatDate, truncate } from '@/lib/utils';
 import {
@@ -232,19 +232,33 @@ export default function DraftClaims() {
     }
   }
 
+  function buildDraftUpdateInput(overrides?: {
+    illnessId?: string;
+    doctorNotes?: string;
+    calendarDocumentIds?: string[];
+    paymentProofDocumentIds?: string[];
+    paymentProofText?: string;
+  }) {
+    return {
+      illnessId: selectedIllnessId,
+      doctorNotes,
+      calendarDocumentIds: selectedCalendarIds,
+      paymentProofDocumentIds: selectedProofIds,
+      paymentProofText: paymentProofNote,
+      ...overrides,
+    };
+  }
+
   // Save draft changes
   async function handleSaveDraft() {
     if (!selectedDraft || selectedDraft.status !== 'pending') return;
 
     setSaving(true);
     try {
-      const updated = await api.updateDraftClaim(selectedDraft.id, {
-        illnessId: selectedIllnessId,
-        doctorNotes,
-        calendarDocumentIds: selectedCalendarIds,
-        paymentProofDocumentIds: selectedProofIds,
-        paymentProofText: paymentProofNote,
-      });
+      const updated = await api.updateDraftClaim(
+        selectedDraft.id,
+        buildDraftUpdateInput()
+      );
       upsertItem(updated);
       setSelectedDraft(updated);
     } catch (err) {
@@ -254,6 +268,70 @@ export default function DraftClaims() {
       setSaving(false);
     }
   }
+
+  const attachProofFile = useCallback(
+    async (file: File) => {
+      if (!selectedDraft || selectedDraft.status !== 'pending') return;
+
+      setUploadingProof(true);
+      try {
+        const result = await api.uploadProofFile(file);
+        const nextProofIds = Array.from(
+          new Set([...selectedProofIds, result.id])
+        );
+
+        setSelectedProofIds(nextProofIds);
+        const docs = await api.getDocuments();
+        setDocuments(docs);
+
+        const updated = await api.updateDraftClaim(
+          selectedDraft.id,
+          buildDraftUpdateInput({ paymentProofDocumentIds: nextProofIds })
+        );
+        upsertItem(updated);
+        setSelectedDraft(updated);
+      } catch (err) {
+        console.error('Failed to upload proof:', err);
+        alert(`Upload failed: ${err}`);
+      } finally {
+        setUploadingProof(false);
+      }
+    },
+    [
+      selectedDraft,
+      selectedProofIds,
+      selectedIllnessId,
+      doctorNotes,
+      selectedCalendarIds,
+      paymentProofNote,
+      upsertItem,
+    ]
+  );
+
+  useEffect(() => {
+    if (!selectedDraft || selectedDraft.status !== 'pending') return;
+
+    const handlePaste = (event: ClipboardEvent) => {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+
+      const fileItem = Array.from(items).find(
+        (item) =>
+          item.kind === 'file' &&
+          (item.type.startsWith('image/') || item.type === 'application/pdf')
+      );
+      if (!fileItem) return;
+
+      const file = fileItem.getAsFile();
+      if (!file) return;
+
+      event.preventDefault();
+      void attachProofFile(file);
+    };
+
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, [selectedDraft?.id, selectedDraft?.status, attachProofFile]);
 
   const calendarDocs = useMemo(
     () => documents.filter((doc) => doc.sourceType === 'calendar'),
@@ -795,22 +873,9 @@ export default function DraftClaims() {
                             onChange={async (e) => {
                               const file = e.target.files?.[0];
                               if (!file) return;
-
-                              setUploadingProof(true);
-                              try {
-                                const result = await api.uploadProofFile(file);
-                                setSelectedProofIds(prev => [...prev, result.id]);
-                                // Refresh documents to include the new upload
-                                const docs = await api.getDocuments();
-                                setDocuments(docs);
-                              } catch (err) {
-                                console.error('Failed to upload proof:', err);
-                                alert(`Upload failed: ${err}`);
-                              } finally {
-                                setUploadingProof(false);
-                                if (fileInputRef.current) {
-                                  fileInputRef.current.value = '';
-                                }
+                              await attachProofFile(file);
+                              if (fileInputRef.current) {
+                                fileInputRef.current.value = '';
                               }
                             }}
                           />
@@ -827,7 +892,7 @@ export default function DraftClaims() {
                             {uploadingProof ? 'Uploading...' : 'Upload screenshot or PDF'}
                           </button>
                           <p className="text-xs text-bauhaus-gray mt-1">
-                            Supports images (PNG, JPG) and PDF files
+                            Supports images (PNG, JPG) and PDF files. Paste to attach.
                           </p>
                         </div>
 
