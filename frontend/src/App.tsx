@@ -36,14 +36,14 @@ function NavItem({ to, icon: Icon, children, indent = false }: { to: string; ico
   );
 }
 
-function NavSection({ 
-  icon: Icon, 
-  label, 
-  children, 
-  basePath 
-}: { 
-  icon: React.ElementType; 
-  label: string; 
+function NavSection({
+  icon: Icon,
+  label,
+  children,
+  basePath
+}: {
+  icon: React.ElementType;
+  label: string;
   children: React.ReactNode;
   basePath: string;
 }) {
@@ -108,7 +108,7 @@ export default function App() {
           <NavItem to="/patients" icon={Users}>Patients</NavItem>
           <NavItem to="/matches" icon={GitCompare}>Match Review</NavItem>
           <NavItem to="/admin" icon={Shield}>Admin</NavItem>
-          
+
           <NavSection icon={Archive} label="Archive" basePath="/archive">
             <NavItem to="/archive/documents" icon={Files} indent>Documents</NavItem>
             <NavItem to="/archive/claims" icon={FileText} indent>Claims</NavItem>

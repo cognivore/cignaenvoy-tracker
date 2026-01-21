@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { FileText, Mail, Calendar, Tag, DollarSign, RefreshCw, Eye, ExternalLink, MapPin, Users, Clock, User, Edit2, Check, X, Archive, Inbox, Trash2 } from 'lucide-react';
+import { FileText, Mail, Calendar, Tag, DollarSign, RefreshCw, Eye, ExternalLink, MapPin, Users, Clock, User, Edit2, Check, X, Archive, Inbox, Trash2, FilePlus, Filter } from 'lucide-react';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import {
   FilterTabs,
@@ -50,6 +50,7 @@ export default function Documents() {
   const [overrideNote, setOverrideNote] = useState('');
   const [savingOverride, setSavingOverride] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [promoting, setPromoting] = useState(false);
 
   // Archive rules state
   const [archiveRules, setArchiveRules] = useState<ArchiveRule[]>([]);
@@ -61,6 +62,7 @@ export default function Documents() {
   const [ruleAttachment, setRuleAttachment] = useState('');
   const [ruleApplyToExisting, setRuleApplyToExisting] = useState(true);
   const [ruleError, setRuleError] = useState<string | null>(null);
+  const [showArchiveRules, setShowArchiveRules] = useState(false);
 
   // Sync override form when selected doc changes
   useEffect(() => {
@@ -74,6 +76,7 @@ export default function Documents() {
       setOverrideNote('');
     }
     setEditingOverride(false);
+    setShowArchiveRules(false);
   }, [selectedDoc?.id]);
 
   useEffect(() => {
@@ -185,6 +188,26 @@ export default function Documents() {
     }
   }
 
+  async function handlePromote() {
+    if (!selectedDoc) return;
+    setPromoting(true);
+    try {
+      const result = await api.promoteDocumentToDraftClaim(selectedDoc.id);
+      if (result.created) {
+        alert('Draft claim created.');
+      } else if (result.expanded) {
+        alert('Draft claim updated with the full email group.');
+      } else {
+        alert('Draft claim already exists for this email group.');
+      }
+    } catch (err) {
+      console.error('Failed to promote document:', err);
+      alert(`Error: ${err}`);
+    } finally {
+      setPromoting(false);
+    }
+  }
+
   async function handleCreateArchiveRule() {
     const name = ruleName.trim();
     const fromContains = ruleFrom.trim();
@@ -253,12 +276,17 @@ export default function Documents() {
     }
   }
 
-  function handlePrefillRuleFromSender() {
+  function prefillRuleFromSender() {
     if (!selectedDoc?.fromAddress) return;
     setRuleFrom(selectedDoc.fromAddress);
     if (!ruleName.trim()) {
       setRuleName(`Archive ${selectedDoc.fromAddress}`);
     }
+  }
+
+  function handleFilterLikeThis() {
+    setShowArchiveRules(true);
+    prefillRuleFromSender();
   }
 
   const filteredDocs = useMemo(() => {
@@ -472,6 +500,8 @@ export default function Documents() {
                     doc={selectedDoc}
                     onArchiveToggle={handleArchiveToggle}
                     archiving={archiving}
+                    onPromote={handlePromote}
+                    promoting={promoting}
                   />
                 ) : (
                   <>
@@ -495,6 +525,17 @@ export default function Documents() {
                             <Eye size={18} />
                           </button>
                           <button
+                            onClick={handlePromote}
+                            disabled={promoting}
+                            className={cn(
+                              'p-2 border border-bauhaus-blue text-bauhaus-blue hover:bg-bauhaus-lightgray transition-colors',
+                              promoting && 'opacity-60 cursor-not-allowed'
+                            )}
+                            title="Create draft claim"
+                          >
+                            <FilePlus size={18} />
+                          </button>
+                          <button
                             onClick={handleArchiveToggle}
                             disabled={archiving}
                             className={cn(
@@ -504,6 +545,13 @@ export default function Documents() {
                             title="Archive"
                           >
                             <Archive size={18} />
+                          </button>
+                          <button
+                            onClick={handleFilterLikeThis}
+                            className="p-2 border border-bauhaus-black text-bauhaus-black hover:bg-bauhaus-lightgray transition-colors"
+                            title="Filter entities like this one"
+                          >
+                            <Filter size={18} />
                           </button>
                           {selectedDoc.attachmentPath && (
                             <a
@@ -747,138 +795,144 @@ export default function Documents() {
                     )}
 
                     {/* Archive rules */}
-                    <div className="mb-6">
-                      <div className="flex items-start justify-between mb-3">
-                        <div>
-                          <h3 className="font-bold flex items-center gap-2">
-                            <Archive size={18} />
-                            Archive Rules
-                          </h3>
-                          <p className="text-xs text-bauhaus-gray">
-                            Auto-archive documents by sender, subject, or attachment name.
-                          </p>
+                    {showArchiveRules ? (
+                      <div className="mb-6">
+                        <div className="flex items-start justify-between mb-3">
+                          <div>
+                            <h3 className="font-bold flex items-center gap-2">
+                              <Archive size={18} />
+                              Email Filters
+                            </h3>
+                            <p className="text-xs text-bauhaus-gray">
+                              Auto-archive documents by sender, subject, or attachment name.
+                            </p>
+                          </div>
+                          {selectedDoc.fromAddress && (
+                            <button
+                              onClick={prefillRuleFromSender}
+                              className="text-xs text-bauhaus-blue hover:underline"
+                            >
+                              Use sender
+                            </button>
+                          )}
                         </div>
-                        {selectedDoc.fromAddress && (
-                          <button
-                            onClick={handlePrefillRuleFromSender}
-                            className="text-xs text-bauhaus-blue hover:underline"
-                          >
-                            Use sender
-                          </button>
-                        )}
-                      </div>
 
-                      <div className="space-y-3 mb-4">
-                        <div>
-                          <label className="block text-xs text-bauhaus-gray mb-1">Rule name</label>
-                          <input
-                            value={ruleName}
-                            onChange={(e) => setRuleName(e.target.value)}
-                            className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
-                            placeholder="Archive Hetzner invoices"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-bauhaus-gray mb-1">From contains</label>
-                          <input
-                            value={ruleFrom}
-                            onChange={(e) => setRuleFrom(e.target.value)}
-                            className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
-                            placeholder="billing@hetzner.com"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-bauhaus-gray mb-1">Subject contains</label>
-                          <input
-                            value={ruleSubject}
-                            onChange={(e) => setRuleSubject(e.target.value)}
-                            className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
-                            placeholder="invoice"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-bauhaus-gray mb-1">Attachment name contains</label>
-                          <input
-                            value={ruleAttachment}
-                            onChange={(e) => setRuleAttachment(e.target.value)}
-                            className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
-                            placeholder="hetzner"
-                          />
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <label className="text-xs text-bauhaus-gray flex items-center gap-2">
+                        <div className="space-y-3 mb-4">
+                          <div>
+                            <label className="block text-xs text-bauhaus-gray mb-1">Rule name</label>
                             <input
-                              type="checkbox"
-                              checked={ruleApplyToExisting}
-                              onChange={(e) => setRuleApplyToExisting(e.target.checked)}
+                              value={ruleName}
+                              onChange={(e) => setRuleName(e.target.value)}
+                              className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                              placeholder="Archive Hetzner invoices"
                             />
-                            Apply to existing documents
-                          </label>
-                          <button
-                            onClick={handleCreateArchiveRule}
-                            disabled={savingRule}
-                            className="px-3 py-2 text-xs border-2 border-bauhaus-black hover:bg-bauhaus-lightgray disabled:opacity-60"
-                          >
-                            {savingRule ? 'Saving...' : 'Create Rule'}
-                          </button>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-bauhaus-gray mb-1">From contains</label>
+                            <input
+                              value={ruleFrom}
+                              onChange={(e) => setRuleFrom(e.target.value)}
+                              className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                              placeholder="billing@hetzner.com"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-bauhaus-gray mb-1">Subject contains</label>
+                            <input
+                              value={ruleSubject}
+                              onChange={(e) => setRuleSubject(e.target.value)}
+                              className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                              placeholder="invoice"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-bauhaus-gray mb-1">Attachment name contains</label>
+                            <input
+                              value={ruleAttachment}
+                              onChange={(e) => setRuleAttachment(e.target.value)}
+                              className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                              placeholder="hetzner"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <label className="text-xs text-bauhaus-gray flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={ruleApplyToExisting}
+                                onChange={(e) => setRuleApplyToExisting(e.target.checked)}
+                              />
+                              Apply to existing documents
+                            </label>
+                            <button
+                              onClick={handleCreateArchiveRule}
+                              disabled={savingRule}
+                              className="px-3 py-2 text-xs border-2 border-bauhaus-black hover:bg-bauhaus-lightgray disabled:opacity-60"
+                            >
+                              {savingRule ? 'Saving...' : 'Create Rule'}
+                            </button>
+                          </div>
+                          {ruleError && (
+                            <p className="text-xs text-bauhaus-red">{ruleError}</p>
+                          )}
                         </div>
-                        {ruleError && (
-                          <p className="text-xs text-bauhaus-red">{ruleError}</p>
-                        )}
-                      </div>
 
-                      <div className="space-y-2">
-                        {loadingRules ? (
-                          <p className="text-xs text-bauhaus-gray">Loading rules...</p>
-                        ) : archiveRules.length === 0 ? (
-                          <p className="text-xs text-bauhaus-gray">No archive rules yet.</p>
-                        ) : (
-                          archiveRules.map((rule) => {
-                            const conditions = [
-                              rule.fromContains && `From contains "${rule.fromContains}"`,
-                              rule.subjectContains && `Subject contains "${rule.subjectContains}"`,
-                              rule.attachmentNameContains && `Attachment contains "${rule.attachmentNameContains}"`,
-                            ]
-                              .filter(Boolean)
-                              .join(' • ');
+                        <div className="space-y-2">
+                          {loadingRules ? (
+                            <p className="text-xs text-bauhaus-gray">Loading rules...</p>
+                          ) : archiveRules.length === 0 ? (
+                            <p className="text-xs text-bauhaus-gray">No archive rules yet.</p>
+                          ) : (
+                            archiveRules.map((rule) => {
+                              const conditions = [
+                                rule.fromContains && `From contains "${rule.fromContains}"`,
+                                rule.subjectContains && `Subject contains "${rule.subjectContains}"`,
+                                rule.attachmentNameContains && `Attachment contains "${rule.attachmentNameContains}"`,
+                              ]
+                                .filter(Boolean)
+                                .join(' • ');
 
-                            return (
-                              <div
-                                key={rule.id}
-                                className="p-3 border-2 border-bauhaus-lightgray flex items-start justify-between gap-3"
-                              >
-                                <div>
-                                  <p className="font-medium">{rule.name}</p>
-                                  <p className="text-xs text-bauhaus-gray">
-                                    {conditions || 'No conditions'}
-                                  </p>
+                              return (
+                                <div
+                                  key={rule.id}
+                                  className="p-3 border-2 border-bauhaus-lightgray flex items-start justify-between gap-3"
+                                >
+                                  <div>
+                                    <p className="font-medium">{rule.name}</p>
+                                    <p className="text-xs text-bauhaus-gray">
+                                      {conditions || 'No conditions'}
+                                    </p>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      onClick={() => handleToggleRule(rule)}
+                                      className={cn(
+                                        'px-2 py-1 text-xs border',
+                                        rule.enabled
+                                          ? 'border-bauhaus-blue text-bauhaus-blue'
+                                          : 'border-bauhaus-gray text-bauhaus-gray'
+                                      )}
+                                    >
+                                      {rule.enabled ? 'Enabled' : 'Disabled'}
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteRule(rule)}
+                                      className="p-1 border border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray"
+                                      title="Delete rule"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
                                 </div>
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    onClick={() => handleToggleRule(rule)}
-                                    className={cn(
-                                      'px-2 py-1 text-xs border',
-                                      rule.enabled
-                                        ? 'border-bauhaus-blue text-bauhaus-blue'
-                                        : 'border-bauhaus-gray text-bauhaus-gray'
-                                    )}
-                                  >
-                                    {rule.enabled ? 'Enabled' : 'Disabled'}
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteRule(rule)}
-                                    className="p-1 border border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray"
-                                    title="Delete rule"
-                                  >
-                                    <Trash2 size={14} />
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })
-                        )}
+                              );
+                            })
+                          )}
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="mb-6 p-3 border border-bauhaus-lightgray text-xs text-bauhaus-gray">
+                        Filters are hidden. Use “Filter entities like this one” above to create or edit rules.
+                      </div>
+                    )}
 
                     {/* OCR text */}
                     {showOcr && selectedDoc.ocrText && (
@@ -1131,10 +1185,14 @@ function CalendarEventDetail({
   doc,
   onArchiveToggle,
   archiving,
+  onPromote,
+  promoting,
 }: {
   doc: MedicalDocument;
   onArchiveToggle: () => void;
   archiving: boolean;
+  onPromote: () => void;
+  promoting: boolean;
 }) {
   return (
     <>
@@ -1143,17 +1201,30 @@ function CalendarEventDetail({
           <span className="inline-block px-2 py-1 text-xs font-medium uppercase bg-teal-600 text-white">
             Calendar Event
           </span>
-          <button
-            onClick={onArchiveToggle}
-            disabled={archiving}
-            className={cn(
-              'p-2 border border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray transition-colors',
-              archiving && 'opacity-60 cursor-not-allowed'
-            )}
-            title="Archive"
-          >
-            <Archive size={18} />
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={onPromote}
+              disabled={promoting}
+              className={cn(
+                'p-2 border border-bauhaus-blue text-bauhaus-blue hover:bg-bauhaus-lightgray transition-colors',
+                promoting && 'opacity-60 cursor-not-allowed'
+              )}
+              title="Create draft claim"
+            >
+              <FilePlus size={18} />
+            </button>
+            <button
+              onClick={onArchiveToggle}
+              disabled={archiving}
+              className={cn(
+                'p-2 border border-bauhaus-red text-bauhaus-red hover:bg-bauhaus-lightgray transition-colors',
+                archiving && 'opacity-60 cursor-not-allowed'
+              )}
+              title="Archive"
+            >
+              <Archive size={18} />
+            </button>
+          </div>
         </div>
 
         <h2 className="text-lg font-bold text-teal-700">

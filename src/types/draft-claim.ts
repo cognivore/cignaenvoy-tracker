@@ -98,6 +98,12 @@ export interface DraftClaim {
   /** Payment signal extracted from the primary document */
   payment: DraftClaimPayment;
 
+  /** Proof-of-payment documents (e.g., bank transfer receipts) */
+  paymentProofDocumentIds?: string[];
+
+  /** Manual proof-of-payment text supplied by the user */
+  paymentProofText?: string;
+
   /** Illness associated with this draft (required for acceptance) */
   illnessId?: string;
 

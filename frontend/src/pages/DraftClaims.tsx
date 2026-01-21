@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Calendar, Check, ExternalLink, FilePlus, FileText, RefreshCw, X, Archive } from 'lucide-react';
+import { Calendar, Check, ExternalLink, FilePlus, FileText, RefreshCw, X, Archive, RotateCcw } from 'lucide-react';
 import { cn, formatCurrency, formatDate, truncate } from '@/lib/utils';
 import {
   FilterTabs,
@@ -37,6 +37,107 @@ const rangeOptions: Array<{ label: string; value: DraftClaimRange }> = [
   { label: 'Last Week', value: 'last_week' },
 ];
 
+const PAYMENT_PROOF_KEYWORDS = [
+  'proof of payment',
+  'payment received',
+  'payment confirmation',
+  'paid',
+  'bank transfer',
+  'transfer',
+  'sent',
+  'transaction',
+  'monzo',
+];
+
+function buildProofText(doc: MedicalDocument): string {
+  return [
+    doc.subject,
+    doc.bodySnippet,
+    doc.ocrText,
+    doc.filename,
+    doc.fromAddress,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function hasProofKeywords(doc: MedicalDocument): boolean {
+  const text = buildProofText(doc);
+  return PAYMENT_PROOF_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
+function getDocumentAmounts(doc: MedicalDocument): Array<{ value: number; currency: string }> {
+  if (doc.paymentOverride) {
+    return [{ value: doc.paymentOverride.amount, currency: doc.paymentOverride.currency }];
+  }
+  return doc.detectedAmounts.map((amount) => ({
+    value: amount.value,
+    currency: amount.currency,
+  }));
+}
+
+function matchesPaymentAmount(doc: MedicalDocument, payment: DraftClaim['payment']): boolean {
+  if (!payment.amount || payment.amount <= 0) return false;
+  return getDocumentAmounts(doc).some(
+    (amount) =>
+      amount.currency === payment.currency &&
+      Math.abs(amount.value - payment.amount) < 0.01
+  );
+}
+
+function isPaymentProofCandidate(doc: MedicalDocument): boolean {
+  if (doc.archivedAt) return false;
+  if (doc.sourceType === 'calendar') return false;
+  return doc.classification === 'receipt' || hasProofKeywords(doc);
+}
+
+function dedupeDocuments(docs: MedicalDocument[]): MedicalDocument[] {
+  const seen = new Set<string>();
+  return docs.filter((doc) => {
+    if (seen.has(doc.id)) return false;
+    seen.add(doc.id);
+    return true;
+  });
+}
+
+function buildPaymentProofCandidates(
+  draft: DraftClaim,
+  documents: MedicalDocument[]
+): MedicalDocument[] {
+  const primaryDocument = documents.find((doc) => doc.id === draft.primaryDocumentId);
+  const forcedDocs = documents.filter((doc) =>
+    (draft.paymentProofDocumentIds ?? []).includes(doc.id)
+  );
+
+  const scored = documents
+    .filter((doc) => doc.id !== draft.primaryDocumentId)
+    .filter(isPaymentProofCandidate)
+    .map((doc) => {
+      const amountMatch = matchesPaymentAmount(doc, draft.payment);
+      const sameEmail =
+        !!primaryDocument?.emailId && doc.emailId === primaryDocument.emailId;
+      const score =
+        (amountMatch ? 4 : 0) +
+        (doc.classification === 'receipt' ? 2 : 0) +
+        (hasProofKeywords(doc) ? 1 : 0) +
+        (sameEmail ? 1 : 0);
+      return { doc, score, amountMatch };
+    })
+    .filter((item) => item.score > 0);
+
+  const preferred = scored.some((item) => item.amountMatch)
+    ? scored.filter((item) => item.amountMatch)
+    : scored;
+
+  const sorted = preferred
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.doc)
+    .slice(0, 20);
+
+  return dedupeDocuments([...forcedDocs, ...sorted]);
+}
+
 export default function DraftClaims() {
   const {
     items: drafts,
@@ -69,6 +170,8 @@ export default function DraftClaims() {
   const [dateMode, setDateMode] = useState<DateMode>('calendar');
   const [manualDate, setManualDate] = useState('');
   const [selectedCalendarIds, setSelectedCalendarIds] = useState<string[]>([]);
+  const [selectedProofIds, setSelectedProofIds] = useState<string[]>([]);
+  const [paymentProofText, setPaymentProofText] = useState('');
 
   useEffect(() => {
     const loadSupportingData = async () => {
@@ -106,12 +209,16 @@ export default function DraftClaims() {
       setDateMode('calendar');
       setManualDate('');
       setSelectedCalendarIds([]);
+      setSelectedProofIds([]);
+      setPaymentProofText('');
       return;
     }
 
     setSelectedIllnessId(draft.illnessId ?? '');
     setDoctorNotes(draft.doctorNotes ?? '');
     setSelectedCalendarIds(draft.calendarDocumentIds ?? []);
+    setSelectedProofIds(draft.paymentProofDocumentIds ?? []);
+    setPaymentProofText(draft.paymentProofText ?? '');
 
     if (draft.treatmentDateSource === 'manual') {
       setDateMode('manual');
@@ -125,6 +232,21 @@ export default function DraftClaims() {
   const calendarDocs = useMemo(
     () => documents.filter((doc) => doc.sourceType === 'calendar'),
     [documents]
+  );
+
+  const paymentProofCandidates = useMemo(() => {
+    if (!selectedDraft) return [];
+    return buildPaymentProofCandidates(selectedDraft, documents);
+  }, [documents, selectedDraft]);
+
+  const activeProofIds =
+    selectedDraft?.status === 'pending'
+      ? selectedProofIds
+      : selectedDraft?.paymentProofDocumentIds ?? [];
+
+  const activeProofDocs = useMemo(
+    () => documents.filter((doc) => activeProofIds.includes(doc.id)),
+    [documents, activeProofIds]
   );
 
   const filteredDrafts = useMemo(() => {
@@ -174,6 +296,18 @@ export default function DraftClaims() {
   const selectedPatient = selectedIllness
     ? patients.find((patient) => patient.id === selectedIllness.patientId)
     : undefined;
+  const proofText =
+    selectedDraft?.status === 'pending'
+      ? paymentProofText.trim()
+      : selectedDraft?.paymentProofText ?? '';
+  const proofProvided = activeProofIds.length > 0 || !!proofText;
+  const proofSummary = proofProvided
+    ? activeProofIds.length > 0
+      ? `${activeProofIds.length} document${activeProofIds.length === 1 ? '' : 's'}${
+          proofText ? ' + note' : ''
+        }`
+      : 'Note provided'
+    : 'Missing';
 
   async function handleGenerate(range: DraftClaimRange) {
     setProcessing(range);
@@ -210,6 +344,12 @@ export default function DraftClaims() {
       return;
     }
 
+    const trimmedProofText = paymentProofText.trim();
+    if (selectedProofIds.length === 0 && !trimmedProofText) {
+      alert('Proof of payment is required');
+      return;
+    }
+
     setProcessing('accept');
     try {
       const updated = await api.acceptDraftClaim(selectedDraft.id, {
@@ -217,6 +357,8 @@ export default function DraftClaims() {
         doctorNotes: doctorNotes.trim(),
         ...(dateMode === 'manual' && manualDate ? { treatmentDate: manualDate } : {}),
         ...(dateMode === 'calendar' ? { calendarDocumentIds: selectedCalendarIds } : {}),
+        paymentProofDocumentIds: selectedProofIds,
+        ...(trimmedProofText ? { paymentProofText: trimmedProofText } : {}),
       });
 
       upsertItem(updated);
@@ -240,6 +382,22 @@ export default function DraftClaims() {
       resetDraftForm(updated);
     } catch (err) {
       console.error('Failed to reject draft claim:', err);
+      alert(`Error: ${err}`);
+    } finally {
+      setProcessing(null);
+    }
+  }
+
+  async function handleMarkPending() {
+    if (!selectedDraft) return;
+    setProcessing('pending');
+    try {
+      const updated = await api.markDraftClaimPending(selectedDraft.id);
+      upsertItem(updated);
+      setSelectedDraft(updated);
+      resetDraftForm(updated);
+    } catch (err) {
+      console.error('Failed to mark draft claim pending:', err);
       alert(`Error: ${err}`);
     } finally {
       setProcessing(null);
@@ -276,6 +434,12 @@ export default function DraftClaims() {
 
   function toggleCalendarId(id: string) {
     setSelectedCalendarIds((prev) =>
+      prev.includes(id) ? prev.filter((docId) => docId !== id) : [...prev, id]
+    );
+  }
+
+  function toggleProofId(id: string) {
+    setSelectedProofIds((prev) =>
       prev.includes(id) ? prev.filter((docId) => docId !== id) : [...prev, id]
     );
   }
@@ -418,6 +582,16 @@ export default function DraftClaims() {
                   {selectedDraft.payment.context && (
                     <DetailRow label="Context" value={truncate(selectedDraft.payment.context, 120)} />
                   )}
+                  <DetailRow
+                    label="Payment Proof"
+                    value={
+                      <span className={cn(
+                        selectedDraft.status === 'pending' && !proofProvided && 'text-bauhaus-red'
+                      )}>
+                        {proofSummary}
+                      </span>
+                    }
+                  />
                   {selectedDraft.treatmentDate && (
                     <DetailRow label="Treatment Date" value={formatDate(selectedDraft.treatmentDate)} />
                   )}
@@ -486,6 +660,65 @@ export default function DraftClaims() {
                           rows={3}
                           placeholder="Add doctor notes or claim context..."
                         />
+                      </div>
+
+                      <div className="mb-3">
+                        <label className="block text-sm text-bauhaus-gray mb-2">
+                          Proof of Payment (required)
+                        </label>
+                        <div className="max-h-40 overflow-auto border border-bauhaus-lightgray">
+                          {paymentProofCandidates.length === 0 ? (
+                            <div className="p-3 text-sm text-bauhaus-gray">
+                              No proof documents found. Paste confirmation below or attach proof in email.
+                            </div>
+                          ) : (
+                            <ul className="divide-y divide-bauhaus-lightgray">
+                              {paymentProofCandidates.map((doc) => (
+                                <li key={doc.id} className="p-3 flex items-start gap-3">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedProofIds.includes(doc.id)}
+                                    onChange={() => toggleProofId(doc.id)}
+                                    className="mt-1"
+                                  />
+                                  <div>
+                                    <p className="font-medium flex items-center gap-1">
+                                      {doc.attachmentPath ? (
+                                        <a
+                                          href={getDocumentFileUrl(doc.id)}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-bauhaus-blue hover:underline inline-flex items-center gap-1"
+                                          onClick={(e) => e.stopPropagation()}
+                                        >
+                                          {doc.filename || doc.subject || 'Payment proof'}
+                                          <ExternalLink size={14} />
+                                        </a>
+                                      ) : (
+                                        doc.filename || doc.subject || 'Payment proof'
+                                      )}
+                                    </p>
+                                    <p className="text-xs text-bauhaus-gray">
+                                      {doc.date ? formatDate(doc.date) : 'No date'}
+                                    </p>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                        <div className="mt-2">
+                          <label className="block text-xs text-bauhaus-gray mb-1">
+                            Manual proof (paste confirmation)
+                          </label>
+                          <textarea
+                            value={paymentProofText}
+                            onChange={(e) => setPaymentProofText(e.target.value)}
+                            className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                            rows={2}
+                            placeholder="Paste Monzo transfer confirmation or transaction reference..."
+                          />
+                        </div>
                       </div>
 
                       <div className="mb-3">
@@ -586,11 +819,54 @@ export default function DraftClaims() {
                         {selectedDraft.doctorNotes && (
                           <DetailRow label="Doctor Notes" value={selectedDraft.doctorNotes} />
                         )}
+                        <DetailRow label="Payment Proof" value={proofSummary} />
+                        {activeProofDocs.length > 0 && (
+                          <div className="pt-2">
+                            <p className="text-xs text-bauhaus-gray mb-1">Proof attachments</p>
+                            <ul className="space-y-1">
+                              {activeProofDocs.map((doc) => (
+                                <li key={doc.id}>
+                                  {doc.attachmentPath ? (
+                                    <a
+                                      href={getDocumentFileUrl(doc.id)}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-sm text-bauhaus-blue hover:underline inline-flex items-center gap-1"
+                                    >
+                                      {doc.filename || doc.subject || 'Attachment'}
+                                      <ExternalLink size={12} />
+                                    </a>
+                                  ) : (
+                                    <span className="text-sm">
+                                      {doc.filename || doc.subject || 'Attachment'}
+                                    </span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {selectedDraft.paymentProofText && (
+                          <div className="pt-2">
+                            <p className="text-xs text-bauhaus-gray mb-1">Proof note</p>
+                            <p className="text-sm">{selectedDraft.paymentProofText}</p>
+                          </div>
+                        )}
                       </>
                     )}
                     {selectedDraft.status === 'rejected' && (
                       <p className="text-sm text-bauhaus-gray">This draft claim was rejected.</p>
                     )}
+                    <div className="mt-4">
+                      <button
+                        onClick={handleMarkPending}
+                        disabled={processing !== null}
+                        className="flex items-center gap-2 px-3 py-2 border-2 border-bauhaus-black font-medium hover:bg-bauhaus-lightgray transition-colors disabled:opacity-60"
+                      >
+                        <RotateCcw size={16} />
+                        {processing === 'pending' ? 'Marking...' : 'Mark as Pending'}
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

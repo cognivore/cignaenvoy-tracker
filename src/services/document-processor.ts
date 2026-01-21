@@ -39,6 +39,7 @@ import {
 } from "../storage/attachment-processing.js";
 import { ensureStorageDirs } from "../storage/index.js";
 import { buildArchiveReason, findMatchingArchiveRule } from "./archive-rules.js";
+import { PAYMENT_PROOF_KEYWORDS } from "./payment-proof.js";
 
 /**
  * Amount extraction patterns.
@@ -66,6 +67,7 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   "$": "USD",
   "£": "GBP",
 };
+
 
 /**
  * Extract amounts from text.
@@ -277,6 +279,14 @@ function extractMedicalKeywords(text: string): string[] {
 }
 
 /**
+ * Check if text looks like proof-of-payment content.
+ */
+function isPaymentProofRelated(text: string, subject?: string): boolean {
+  const combined = `${subject ?? ""} ${text}`.toLowerCase();
+  return PAYMENT_PROOF_KEYWORDS.some((keyword) => combined.includes(keyword));
+}
+
+/**
  * Document processor configuration.
  */
 export interface ProcessorConfig {
@@ -302,7 +312,7 @@ export interface ProcessorConfig {
 
 const DEFAULT_SEARCH_QUERIES = [
   "doctor appointment",
-  "medical invoice",
+  "invoice",
   "healthcare bill",
   "therapy session",
   "prescription",
@@ -313,6 +323,9 @@ const DEFAULT_SEARCH_QUERIES = [
   "psychotherapy",
   "dentist",
   "optometrist",
+  "proof of payment",
+  "payment received",
+  "paid",
 ];
 
 const DEFAULT_CALENDAR_QUERIES = [
@@ -331,6 +344,7 @@ const DEFAULT_CALENDAR_QUERIES = [
   "treatment",
   "checkup",
   "physiotherapy",
+  "vitality",
 ];
 
 const ATTACHMENT_PROCESSOR_VERSION = 2;
@@ -412,7 +426,7 @@ export class DocumentProcessor {
         const doc = await createMedicalDocument(emailDoc);
         documents.push(doc);
       }
-    } else if (isMedicalRelated(emailText)) {
+    } else if (isMedicalRelated(emailText) || isPaymentProofRelated(emailText, email.subject)) {
       // Check if already processed - only skip the email body, NOT attachments
       if (this.config.skipExisting) {
         const existing = await findDocumentByEmailId(email.id);
@@ -594,7 +608,7 @@ export class DocumentProcessor {
     const ocrText = ocrResult.text;
 
     // Check if content is medical-related
-    if (!isMedicalRelated(ocrText, email.subject)) {
+    if (!isMedicalRelated(ocrText, email.subject) && !isPaymentProofRelated(ocrText, email.subject)) {
       await upsertAttachmentProcessingRecord({
         attachmentPath,
         emailId: email.id,
@@ -795,7 +809,7 @@ export class DocumentProcessor {
           const ocrText = ocrResult.text;
 
           // Only process medical-related content
-          if (!isMedicalRelated(ocrText)) {
+          if (!isMedicalRelated(ocrText) && !isPaymentProofRelated(ocrText)) {
             await upsertAttachmentProcessingRecord({
               attachmentPath,
               emailId,

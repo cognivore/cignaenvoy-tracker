@@ -35,6 +35,7 @@ import {
   updateDraftClaim,
   archiveDraftClaim,
   unarchiveDraftClaim,
+  markDraftClaimPending,
   getArchivedDraftClaims,
   getActiveDraftClaims,
 } from "../storage/draft-claims.js";
@@ -68,8 +69,10 @@ import {
 import { ensureStorageDirs } from "../storage/index.js";
 import { DocumentProcessor } from "../services/document-processor.js";
 import { generateDraftClaims } from "../services/draft-claim-generator.js";
+import { promoteDocumentToDraftClaim } from "../services/draft-claim-promoter.js";
 import { Matcher } from "../services/matcher.js";
 import { applyArchiveRuleToExistingDocuments } from "../services/archive-rules.js";
+import { dedupeIds } from "../services/ids.js";
 import {
   runDocumentProcessing,
   startDocumentProcessingSchedule,
@@ -335,6 +338,19 @@ routes.PUT["/api/documents/:id/archive"] = async (_req, _res, params, body) => {
   const updated = await unarchiveDocument(params.id!);
   requireEntity(updated, "Document");
   return updated;
+};
+
+/** Promote a document (and its email group) into a draft claim */
+routes.POST["/api/documents/:id/promote"] = async (_req, _res, params) => {
+  const document = await documentsStorage.get(params.id!);
+  requireEntity(document, "Document");
+
+  if (document.archivedAt) {
+    httpError(400, "Cannot promote an archived document");
+  }
+
+  const documents = await documentsStorage.getAll();
+  return promoteDocumentToDraftClaim(document, documents);
 };
 
 // =============================================
@@ -619,11 +635,20 @@ routes.POST["/api/draft-claims/generate"] = async (_req, _res, _params, body) =>
 };
 
 routes.POST["/api/draft-claims/:id/accept"] = async (_req, _res, params, body) => {
-  const { illnessId, doctorNotes, calendarDocumentIds, treatmentDate } = body as {
+  const {
+    illnessId,
+    doctorNotes,
+    calendarDocumentIds,
+    treatmentDate,
+    paymentProofDocumentIds,
+    paymentProofText,
+  } = body as {
     illnessId?: string;
     doctorNotes?: string;
     calendarDocumentIds?: string[];
     treatmentDate?: string;
+    paymentProofDocumentIds?: string[];
+    paymentProofText?: string;
   };
 
   requireFields({ illnessId }, ["illnessId"], "illnessId is required to accept a draft claim");
@@ -637,12 +662,42 @@ routes.POST["/api/draft-claims/:id/accept"] = async (_req, _res, params, body) =
   const illness = await illnessesStorage.get(illnessId!);
   requireEntity(illness, "Illness");
 
-  const calendarIds = Array.isArray(calendarDocumentIds) ? calendarDocumentIds.filter(Boolean) : [];
+  const calendarIds = Array.isArray(calendarDocumentIds)
+    ? calendarDocumentIds.filter(Boolean)
+    : [];
+  const proofIdsInput = Array.isArray(paymentProofDocumentIds)
+    ? paymentProofDocumentIds.filter(Boolean)
+    : [];
+  const trimmedProofText = paymentProofText?.trim() ?? "";
+  const existingProofIds = draft.paymentProofDocumentIds ?? [];
+  const finalProofIds = proofIdsInput.length > 0 ? proofIdsInput : existingProofIds;
+  const finalProofText = trimmedProofText || draft.paymentProofText;
+
+  if (finalProofIds.length === 0 && !finalProofText) {
+    httpError(400, "payment proof is required to accept a draft claim");
+  }
+
+  if (finalProofIds.length > 0) {
+    const proofDocs = await Promise.all(
+      finalProofIds.map((id) => documentsStorage.get(id))
+    );
+    if (proofDocs.some((doc) => !doc)) {
+      httpError(404, "Payment proof document not found");
+    }
+    const validProofDocs = proofDocs.filter((doc): doc is MedicalDocument => !!doc);
+    if (validProofDocs.some((doc) => doc.sourceType === "calendar")) {
+      httpError(400, "Payment proof cannot be a calendar document");
+    }
+  }
 
   // Determine treatment date
   const { finalDate, dateSource } = await resolveTreatmentDate(treatmentDate, calendarIds);
 
-  const documentIds = Array.from(new Set([...draft.documentIds, ...calendarIds]));
+  const documentIds = dedupeIds([
+    ...draft.documentIds,
+    ...calendarIds,
+    ...finalProofIds,
+  ]);
 
   const updated = await updateDraftClaim(params.id!, {
     status: "accepted",
@@ -651,6 +706,8 @@ routes.POST["/api/draft-claims/:id/accept"] = async (_req, _res, params, body) =
     treatmentDate: finalDate,
     treatmentDateSource: dateSource,
     ...(calendarIds.length > 0 && { calendarDocumentIds: calendarIds }),
+    ...(finalProofIds.length > 0 && { paymentProofDocumentIds: finalProofIds }),
+    ...(finalProofText && { paymentProofText: finalProofText }),
     documentIds,
     acceptedAt: new Date(),
   });
@@ -664,6 +721,12 @@ routes.POST["/api/draft-claims/:id/reject"] = async (_req, _res, params) => {
     status: "rejected",
     rejectedAt: new Date(),
   });
+  requireEntity(updated, "Draft claim");
+  return updated;
+};
+
+routes.POST["/api/draft-claims/:id/pending"] = async (_req, _res, params) => {
+  const updated = await markDraftClaimPending(params.id!);
   requireEntity(updated, "Draft claim");
   return updated;
 };
@@ -938,6 +1001,7 @@ export function startServer(port = PORT) {
     console.log("  GET  /api/claims");
     console.log("  GET  /api/documents");
     console.log("  PUT  /api/documents/:id/archive");
+    console.log("  POST /api/documents/:id/promote");
     console.log("  GET  /api/archive-rules");
     console.log("  POST /api/archive-rules");
     console.log("  PUT  /api/archive-rules/:id");

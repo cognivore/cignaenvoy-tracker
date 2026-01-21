@@ -6,11 +6,7 @@
  */
 
 import type { MedicalDocument } from "../types/medical-document.js";
-import type {
-    DraftClaim,
-    DraftClaimPayment,
-    DraftClaimRange,
-} from "../types/draft-claim.js";
+import type { DraftClaim, DraftClaimRange } from "../types/draft-claim.js";
 import { documentsStorage } from "../storage/documents.js";
 import { assignmentsStorage } from "../storage/assignments.js";
 import {
@@ -21,6 +17,9 @@ import {
     getPrimaryPaymentSignal,
     hasPaymentSignal,
 } from "./payment-signal.js";
+import { toDraftClaimPayment } from "./draft-claim-payments.js";
+import { dedupeIds } from "./ids.js";
+import { resolvePaymentProofDocuments } from "./payment-proof.js";
 
 /**
  * Determine if a document is within the requested date range.
@@ -42,36 +41,12 @@ function isWithinRange(
 }
 
 /**
- * Convert a payment signal into a draft claim payment snapshot.
+ * Convert a document's primary payment signal into a draft claim payment snapshot.
  */
-function toDraftClaimPayment(document: MedicalDocument): DraftClaimPayment | null {
+function buildDraftPayment(document: MedicalDocument) {
     const signal = getPrimaryPaymentSignal(document);
     if (!signal) return null;
-
-    const payment: DraftClaimPayment = {
-        amount: signal.amount,
-        currency: signal.currency,
-        source: signal.source,
-    };
-
-    if (signal.confidence !== undefined) {
-        payment.confidence = signal.confidence;
-    }
-
-    if (signal.rawText !== undefined) {
-        payment.rawText = signal.rawText;
-    }
-    if (signal.context !== undefined) {
-        payment.context = signal.context;
-    }
-    if (signal.overrideNote !== undefined) {
-        payment.overrideNote = signal.overrideNote;
-    }
-    if (signal.overrideUpdatedAt !== undefined) {
-        payment.overrideUpdatedAt = signal.overrideUpdatedAt;
-    }
-
-    return payment;
+    return toDraftClaimPayment(signal);
 }
 
 /**
@@ -112,14 +87,23 @@ export async function generateDraftClaims(
     const createdDrafts: DraftClaim[] = [];
 
     for (const document of candidates) {
-        const payment = toDraftClaimPayment(document);
+        const payment = buildDraftPayment(document);
         if (!payment) continue;
+
+        const proofDocs = resolvePaymentProofDocuments({
+            documents,
+            primaryDocument: document,
+            payment,
+        });
+        const proofIds = proofDocs.map((doc) => doc.id);
+        const documentIds = dedupeIds([document.id, ...proofIds]);
 
         const draft = await createDraftClaim({
             status: "pending",
             primaryDocumentId: document.id,
-            documentIds: [document.id],
+            documentIds,
             payment,
+            ...(proofIds.length > 0 && { paymentProofDocumentIds: proofIds }),
         });
 
         createdDrafts.push(draft);

@@ -149,6 +149,8 @@ export interface DraftClaim {
   primaryDocumentId: string;
   documentIds: string[];
   payment: DraftClaimPayment;
+  paymentProofDocumentIds?: string[];
+  paymentProofText?: string;
   illnessId?: string;
   doctorNotes?: string;
   treatmentDate?: string;
@@ -291,6 +293,12 @@ export interface Stats {
   };
 }
 
+export interface PromoteDraftClaimResponse {
+  draft: DraftClaim;
+  created: boolean;
+  expanded: boolean;
+}
+
 // === API Functions ===
 
 export const api = {
@@ -312,6 +320,10 @@ export const api = {
   getDocuments: () => fetchJson<MedicalDocument[]>("/documents"),
   getDocument: (id: string) => fetchJson<MedicalDocument>(`/documents/${id}`),
   getMedicalBills: () => fetchJson<MedicalDocument[]>("/documents/medical-bills"),
+  promoteDocumentToDraftClaim: (id: string) =>
+    fetchJson<PromoteDraftClaimResponse>(`/documents/${id}/promote`, {
+      method: "POST",
+    }),
   setDocumentArchived: (
     id: string,
     input: { archived: boolean; reason?: string; ruleId?: string }
@@ -434,6 +446,8 @@ export const api = {
       doctorNotes: string;
       calendarDocumentIds?: string[];
       treatmentDate?: string;
+      paymentProofDocumentIds?: string[];
+      paymentProofText?: string;
     }
   ) =>
     fetchJson<DraftClaim>(`/draft-claims/${id}/accept`, {
@@ -442,6 +456,10 @@ export const api = {
     }),
   rejectDraftClaim: (id: string) =>
     fetchJson<DraftClaim>(`/draft-claims/${id}/reject`, {
+      method: "POST",
+    }),
+  markDraftClaimPending: (id: string) =>
+    fetchJson<DraftClaim>(`/draft-claims/${id}/pending`, {
       method: "POST",
     }),
   runDraftMatching: () =>

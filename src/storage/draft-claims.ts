@@ -61,6 +61,26 @@ export async function updateDraftClaim(
 }
 
 /**
+ * Reset a draft claim back to pending status.
+ * Clears accepted/rejected timestamps but preserves draft details.
+ */
+export async function markDraftClaimPending(
+  id: string
+): Promise<DraftClaim | null> {
+  const existing = await draftClaimsStorage.get(id);
+  if (!existing) return null;
+
+  const { acceptedAt: _acceptedAt, rejectedAt: _rejectedAt, ...rest } = existing;
+  const updated: DraftClaim = {
+    ...rest,
+    status: "pending",
+    updatedAt: new Date(),
+  };
+
+  return draftClaimsStorage.save(updated);
+}
+
+/**
  * Get draft claims by status.
  */
 export async function getDraftClaimsByStatus(
