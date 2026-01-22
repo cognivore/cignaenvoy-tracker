@@ -2,13 +2,17 @@ import { useState } from 'react';
 import { FileText, RefreshCw, Inbox, DollarSign, Calendar } from 'lucide-react';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import { EmptyState, LoadingSpinner, DetailRow } from '@/components';
-import { api, type ScrapedClaim } from '@/lib/api';
+import { api, type Claim } from '@/lib/api';
 import { useUnseenList } from '@/lib/useUnseenList';
 
-const statusColors: Record<string, string> = {
-  processed: 'bg-green-600',
-  pending: 'bg-bauhaus-yellow text-bauhaus-black',
+const statusColors: Record<Claim['status'], string> = {
+  draft: 'bg-bauhaus-gray',
+  ready: 'bg-bauhaus-black',
+  submitted: 'bg-bauhaus-blue',
+  processing: 'bg-bauhaus-yellow text-bauhaus-black',
+  approved: 'bg-bauhaus-green',
   rejected: 'bg-bauhaus-red',
+  paid: 'bg-emerald-600',
 };
 
 export default function ArchivedClaims() {
@@ -17,16 +21,16 @@ export default function ArchivedClaims() {
     loading,
     refresh,
     removeItem,
-  } = useUnseenList<ScrapedClaim>({
+  } = useUnseenList<Claim>({
     fetcher: api.getArchivedClaims,
     cacheKey: 'archived-claims',
     sortFn: (a, b) => new Date(b.archivedAt!).getTime() - new Date(a.archivedAt!).getTime(),
   });
 
-  const [selectedClaim, setSelectedClaim] = useState<ScrapedClaim | null>(null);
+  const [selectedClaim, setSelectedClaim] = useState<Claim | null>(null);
   const [unarchiving, setUnarchiving] = useState(false);
 
-  async function handleUnarchive(claim: ScrapedClaim) {
+  async function handleUnarchive(claim: Claim) {
     setUnarchiving(true);
     try {
       await api.setClaimArchived(claim.id, false);
@@ -94,10 +98,12 @@ export default function ArchivedClaims() {
                         {claim.status.toUpperCase()}
                       </span>
                     </div>
-                    <h3 className="font-medium">Claim #{claim.cignaClaimNumber}</h3>
-                    <p className="text-sm text-bauhaus-gray">{claim.memberName}</p>
+                    <h3 className="font-medium">
+                      Claim {claim.cignaClaimId ?? claim.submissionNumber ?? claim.id}
+                    </h3>
+                    <p className="text-sm text-bauhaus-gray">{claim.claimType}</p>
                     <p className="text-sm font-medium text-bauhaus-blue">
-                      {formatCurrency(claim.claimAmount, claim.claimCurrency)}
+                      {formatCurrency(claim.totalAmount, claim.currency)}
                     </p>
                     <p className="text-xs text-bauhaus-gray mt-1">
                       Archived: {formatDate(claim.archivedAt!)}
@@ -128,41 +134,27 @@ export default function ArchivedClaims() {
                 </button>
               </div>
 
-              <h2 className="text-xl font-bold mb-4">
-                Claim #{selectedClaim.cignaClaimNumber}
-              </h2>
+              <h2 className="text-xl font-bold mb-4">Claim Details</h2>
 
               <div className="space-y-3">
                 <DetailRow
                   icon={FileText}
                   label="Submission #"
-                  value={selectedClaim.submissionNumber}
+                  value={selectedClaim.submissionNumber ?? '—'}
                 />
                 <DetailRow
-                  label="Member"
-                  value={selectedClaim.memberName}
+                  label="Patient"
+                  value={selectedClaim.patientId}
                 />
                 <DetailRow
                   icon={Calendar}
-                  label="Treatment Date"
-                  value={formatDate(selectedClaim.treatmentDate)}
+                  label="Submitted At"
+                  value={selectedClaim.submittedAt ? formatDate(selectedClaim.submittedAt) : '—'}
                 />
                 <DetailRow
                   icon={DollarSign}
                   label="Claim Amount"
-                  value={formatCurrency(selectedClaim.claimAmount, selectedClaim.claimCurrency)}
-                />
-                {selectedClaim.amountPaid !== undefined && (
-                  <DetailRow
-                    icon={DollarSign}
-                    label="Amount Paid"
-                    value={formatCurrency(selectedClaim.amountPaid, selectedClaim.paymentCurrency || selectedClaim.claimCurrency)}
-                  />
-                )}
-                <DetailRow
-                  icon={Calendar}
-                  label="Submission Date"
-                  value={formatDate(selectedClaim.submissionDate)}
+                  value={formatCurrency(selectedClaim.totalAmount, selectedClaim.currency)}
                 />
                 {selectedClaim.archivedAt && (
                   <div className="pt-3 border-t border-bauhaus-lightgray">
@@ -172,22 +164,6 @@ export default function ArchivedClaims() {
                   </div>
                 )}
               </div>
-
-              {selectedClaim.lineItems.length > 0 && (
-                <div className="mt-6 pt-4 border-t border-bauhaus-lightgray">
-                  <h3 className="font-medium mb-3">Line Items</h3>
-                  <div className="space-y-2">
-                    {selectedClaim.lineItems.map((item, idx) => (
-                      <div key={idx} className="p-3 bg-bauhaus-lightgray/50 rounded text-sm">
-                        <p className="font-medium">{item.treatmentDescription}</p>
-                        <p className="text-bauhaus-gray">
-                          {formatDate(item.treatmentDate)} · {formatCurrency(item.claimAmount, item.claimCurrency)}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           )}
         </div>

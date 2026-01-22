@@ -63,7 +63,7 @@ export default function Matches() {
   const loadReferenceData = useCallback(async () => {
     try {
       const [claimsList, docsList, patientsList, draftClaims] = await Promise.all([
-        api.getClaims(),
+        api.getScrapedClaims(),
         api.getDocuments(),
         api.getPatients(),
         api.getDraftClaims(),

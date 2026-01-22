@@ -60,6 +60,45 @@ export interface ScrapedClaim {
   archivedAt?: string;
 }
 
+export type ClaimStatus =
+  | "draft"
+  | "ready"
+  | "submitted"
+  | "processing"
+  | "approved"
+  | "rejected"
+  | "paid";
+
+export interface Claim {
+  id: string;
+  draftClaimId?: string;
+  patientId: string;
+  illnessId?: string;
+  documentIds?: string[];
+  proofDocumentIds?: string[];
+  treatmentIds: string[];
+  claimType: ClaimType;
+  status: ClaimStatus;
+  cignaClaimId?: string;
+  submissionNumber?: string;
+  submissionUrl?: string;
+  claimUrl?: string;
+  symptoms: Symptom[];
+  totalAmount: number;
+  currency: string;
+  country: string;
+  submittedAt?: string;
+  processedAt?: string;
+  approvedAmount?: number;
+  rejectionReason?: string;
+  notes?: string;
+  submissionLog?: string[];
+  submissionErrors?: string[];
+  createdAt: string;
+  updatedAt: string;
+  archivedAt?: string;
+}
+
 export interface DetectedAmount {
   value: number;
   currency: string;
@@ -132,6 +171,13 @@ export type DraftClaimRange = "forever" | "last_month" | "last_week";
 
 export type DraftClaimPaymentSource = "detected" | "override";
 
+export type ClaimType = "Medical" | "Vision" | "Dental";
+
+export interface Symptom {
+  name: string;
+  description: string;
+}
+
 export interface DraftClaimPayment {
   amount: number;
   currency: string;
@@ -143,6 +189,16 @@ export interface DraftClaimPayment {
   overrideUpdatedAt?: string;
 }
 
+export interface DraftClaimSubmission {
+  claimType?: ClaimType;
+  country?: string;
+  symptoms?: Symptom[];
+  providerName?: string;
+  providerAddress?: string;
+  providerCountry?: string;
+  progressReport?: string;
+}
+
 export interface DraftClaim {
   id: string;
   status: DraftClaimStatus;
@@ -151,6 +207,7 @@ export interface DraftClaim {
   payment: DraftClaimPayment;
   paymentProofDocumentIds?: string[];
   paymentProofText?: string;
+  submission?: DraftClaimSubmission;
   illnessId?: string;
   doctorNotes?: string;
   treatmentDate?: string;
@@ -306,12 +363,23 @@ export const api = {
   getStats: () => fetchJson<Stats>("/stats"),
 
   // Claims
-  getClaims: () => fetchJson<ScrapedClaim[]>("/claims"),
-  getClaim: (id: string) => fetchJson<ScrapedClaim>(`/claims/${id}`),
-  getArchivedClaims: () => fetchJson<ScrapedClaim[]>("/claims/archived"),
-  getActiveClaims: () => fetchJson<ScrapedClaim[]>("/claims/active"),
+  getClaims: () => fetchJson<Claim[]>("/claims"),
+  getClaim: (id: string) => fetchJson<Claim>(`/claims/${id}`),
+  getArchivedClaims: () => fetchJson<Claim[]>("/claims/archived"),
+  getActiveClaims: () => fetchJson<Claim[]>("/claims/active"),
   setClaimArchived: (id: string, archived: boolean) =>
-    fetchJson<ScrapedClaim>(`/claims/${id}/archive`, {
+    fetchJson<Claim>(`/claims/${id}/archive`, {
+      method: "PUT",
+      body: JSON.stringify({ archived }),
+    }),
+
+  // Scraped Claims
+  getScrapedClaims: () => fetchJson<ScrapedClaim[]>("/scraped-claims"),
+  getScrapedClaim: (id: string) => fetchJson<ScrapedClaim>(`/scraped-claims/${id}`),
+  getArchivedScrapedClaims: () => fetchJson<ScrapedClaim[]>("/scraped-claims/archived"),
+  getActiveScrapedClaims: () => fetchJson<ScrapedClaim[]>("/scraped-claims/active"),
+  setScrapedClaimArchived: (id: string, archived: boolean) =>
+    fetchJson<ScrapedClaim>(`/scraped-claims/${id}/archive`, {
       method: "PUT",
       body: JSON.stringify({ archived }),
     }),
@@ -462,6 +530,19 @@ export const api = {
     fetchJson<DraftClaim>(`/draft-claims/${id}/pending`, {
       method: "POST",
     }),
+  submitDraftClaim: (
+    id: string,
+    credentials?: {
+      cignaId?: string;
+      password?: string;
+      totpSecret?: string;
+      headless?: boolean;
+    }
+  ) =>
+    fetchJson<Claim>(`/draft-claims/${id}/submit`, {
+      method: "POST",
+      body: JSON.stringify(credentials ?? {}),
+    }),
   /** Auto-save partial updates to a pending draft claim */
   updateDraftClaim: (
     id: string,
@@ -471,6 +552,7 @@ export const api = {
       calendarDocumentIds?: string[];
       paymentProofDocumentIds?: string[];
       paymentProofText?: string;
+      submission?: DraftClaimSubmission;
     }
   ) =>
     fetchJson<DraftClaim>(`/draft-claims/${id}`, {

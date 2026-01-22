@@ -39,6 +39,7 @@ export * from "./claims.js";
 export * from "./documents.js";
 export * from "./assignments.js";
 export * from "./draft-claims.js";
+export * from "./submitted-claims.js";
 export * from "./patients.js";
 export * from "./illnesses.js";
 export * from "./archive-rules.js";

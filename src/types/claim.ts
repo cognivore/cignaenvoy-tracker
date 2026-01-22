@@ -56,8 +56,20 @@ export interface Claim {
   /** Internal UUID for local tracking */
   id: string;
 
+  /** Reference to originating draft claim (if submitted from draft) */
+  draftClaimId?: string;
+
   /** Reference to the patient this claim is for */
   patientId: string;
+
+  /** Reference to illness this claim relates to */
+  illnessId?: string;
+
+  /** Supporting document IDs attached to this claim */
+  documentIds?: string[];
+
+  /** Proof-of-payment document IDs attached to this claim */
+  proofDocumentIds?: string[];
 
   /** References to treatments included in this claim */
   treatmentIds: string[];
@@ -70,6 +82,15 @@ export interface Claim {
 
   /** External Cigna claim ID after submission */
   cignaClaimId?: string;
+
+  /** Submission number assigned by Cigna */
+  submissionNumber?: string;
+
+  /** URL to the submission confirmation */
+  submissionUrl?: string;
+
+  /** URL to the claim details page */
+  claimUrl?: string;
 
   /** Symptoms/diagnoses (up to 3) */
   symptoms: Symptom[];
@@ -98,11 +119,20 @@ export interface Claim {
   /** Additional notes */
   notes?: string;
 
+  /** Submission log entries */
+  submissionLog?: string[];
+
+  /** Submission errors */
+  submissionErrors?: string[];
+
   /** Creation timestamp */
   createdAt: Date;
 
   /** Last update timestamp */
   updatedAt: Date;
+
+  /** Timestamp when claim was archived (if archived) */
+  archivedAt?: Date;
 }
 
 /**

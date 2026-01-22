@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ExternalLink, FilePlus, FileText, RefreshCw, X, Archive, RotateCcw, Upload, Trash2 } from 'lucide-react';
+import { Check, ExternalLink, FilePlus, FileText, RefreshCw, X, Archive, RotateCcw, Upload, Trash2, ChevronDown } from 'lucide-react';
 import { cn, formatCurrency, formatDate, truncate } from '@/lib/utils';
 import {
   FilterTabs,
@@ -15,6 +15,7 @@ import {
   type DraftClaim,
   type DraftClaimRange,
   type DraftClaimStatus,
+  type ClaimType,
   type Illness,
   type MedicalDocument,
   type Patient,
@@ -172,8 +173,15 @@ export default function DraftClaims() {
   const [selectedCalendarIds, setSelectedCalendarIds] = useState<string[]>([]);
   const [selectedProofIds, setSelectedProofIds] = useState<string[]>([]);
   const [paymentProofNote, setPaymentProofNote] = useState('');
+  const [claimType, setClaimType] = useState<ClaimType>('Medical');
+  const [claimCountry, setClaimCountry] = useState('');
+  const [symptomInputs, setSymptomInputs] = useState<string[]>(['', '', '']);
+  const [providerName, setProviderName] = useState('');
+  const [providerAddress, setProviderAddress] = useState('');
+  const [providerCountry, setProviderCountry] = useState('');
   const [uploadingProof, setUploadingProof] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [documentsExpanded, setDocumentsExpanded] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -205,6 +213,10 @@ export default function DraftClaims() {
     }
   }, [drafts, selectedDraft]);
 
+  useEffect(() => {
+    setDocumentsExpanded(false);
+  }, [selectedDraft?.id]);
+
   function resetDraftForm(draft: DraftClaim | null) {
     if (!draft) {
       setSelectedIllnessId('');
@@ -214,14 +226,49 @@ export default function DraftClaims() {
       setSelectedCalendarIds([]);
       setSelectedProofIds([]);
       setPaymentProofNote('');
+      setClaimType('Medical');
+      setClaimCountry('');
+      setSymptomInputs(['', '', '']);
+      setProviderName('');
+      setProviderAddress('');
+      setProviderCountry('');
       return;
     }
 
+    const submission = draft.submission ?? {};
+    const illness = illnesses.find((item) => item.id === draft.illnessId);
+    const patient = illness ? patients.find((item) => item.id === illness.patientId) : undefined;
+    const providerAccount =
+      illness?.relevantAccounts?.find((account) => account.role === 'provider') ??
+      illness?.relevantAccounts?.[0];
+    const symptomDefaults =
+      submission.symptoms?.map((symptom) => symptom.name).filter(Boolean) ?? [];
+    const fallbackSymptoms =
+      symptomDefaults.length > 0 ? symptomDefaults : illness?.name ? [illness.name] : [];
+
     setSelectedIllnessId(draft.illnessId ?? '');
-    setDoctorNotes(draft.doctorNotes ?? '');
+    setDoctorNotes(submission.progressReport ?? draft.doctorNotes ?? '');
     setSelectedCalendarIds(draft.calendarDocumentIds ?? []);
     setSelectedProofIds(draft.paymentProofDocumentIds ?? []);
     setPaymentProofNote(draft.paymentProofText ?? '');
+    setClaimType(submission.claimType ?? 'Medical');
+    setClaimCountry(
+      submission.country ?? patient?.workLocation ?? patient?.citizenship ?? ''
+    );
+    setSymptomInputs([
+      fallbackSymptoms[0] ?? '',
+      fallbackSymptoms[1] ?? '',
+      fallbackSymptoms[2] ?? '',
+    ]);
+    setProviderName(submission.providerName ?? providerAccount?.name ?? providerAccount?.email ?? '');
+    setProviderAddress(submission.providerAddress ?? '');
+    setProviderCountry(
+      submission.providerCountry ??
+        submission.country ??
+        patient?.workLocation ??
+        patient?.citizenship ??
+        ''
+    );
 
     if (draft.treatmentDateSource === 'manual') {
       setDateMode('manual');
@@ -238,13 +285,32 @@ export default function DraftClaims() {
     calendarDocumentIds?: string[];
     paymentProofDocumentIds?: string[];
     paymentProofText?: string;
+    submission?: DraftClaim['submission'];
   }) {
+    const symptoms = symptomInputs
+      .map((symptom) => symptom.trim())
+      .filter(Boolean)
+      .slice(0, 3)
+      .map((symptom) => ({
+        name: symptom,
+        description: symptom,
+      }));
+
     return {
       illnessId: selectedIllnessId,
       doctorNotes,
       calendarDocumentIds: selectedCalendarIds,
       paymentProofDocumentIds: selectedProofIds,
       paymentProofText: paymentProofNote,
+      submission: {
+        claimType,
+        country: claimCountry,
+        symptoms,
+        providerName,
+        providerAddress,
+        providerCountry,
+        progressReport: doctorNotes,
+      },
       ...overrides,
     };
   }
@@ -395,6 +461,23 @@ export default function DraftClaims() {
   const selectedDocument = selectedDraft
     ? documents.find((doc) => doc.id === selectedDraft.primaryDocumentId)
     : undefined;
+  const documentsById = useMemo(() => new Map(documents.map((doc) => [doc.id, doc])), [
+    documents,
+  ]);
+  const draftDocumentIds = selectedDraft?.documentIds ?? [];
+  const draftProofIds = selectedDraft?.paymentProofDocumentIds ?? [];
+  const allDocumentIds = useMemo(() => {
+    const seen = new Set<string>();
+    for (const id of draftDocumentIds) seen.add(id);
+    for (const id of draftProofIds) seen.add(id);
+    return Array.from(seen);
+  }, [draftDocumentIds, draftProofIds]);
+  const supportingDocumentIds = useMemo(() => {
+    const primaryId = selectedDraft?.primaryDocumentId;
+    return draftDocumentIds.filter(
+      (id) => id !== primaryId && !draftProofIds.includes(id)
+    );
+  }, [draftDocumentIds, draftProofIds, selectedDraft?.primaryDocumentId]);
 
   const selectedIllness = illnesses.find((illness) => illness.id === selectedIllnessId);
   const selectedPatient = selectedIllness
@@ -534,6 +617,55 @@ export default function DraftClaims() {
     } finally {
       setProcessing(null);
     }
+  }
+
+  async function handleSubmitClaim() {
+    if (!selectedDraft) return;
+    setProcessing('submit');
+    try {
+      const claim = await api.submitDraftClaim(selectedDraft.id);
+      alert(`Submission started. Claim ID: ${claim.id}`);
+    } catch (err) {
+      console.error('Failed to submit claim:', err);
+      alert(`Error: ${err}`);
+    } finally {
+      setProcessing(null);
+    }
+  }
+
+  function renderDocumentGroup(title: string, ids: string[]) {
+    if (ids.length === 0) return null;
+    return (
+      <div>
+        <p className="text-xs text-bauhaus-gray mb-1">{title}</p>
+        <ul className="space-y-1">
+          {ids.map((id) => {
+            const doc = documentsById.get(id);
+            const label = doc?.filename || doc?.subject || 'Document';
+            return (
+              <li key={id} className="flex items-center justify-between gap-2 text-sm">
+                {doc?.attachmentPath ? (
+                  <a
+                    href={getDocumentFileUrl(id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-bauhaus-blue hover:underline inline-flex items-center gap-1 truncate"
+                  >
+                    {label}
+                    <ExternalLink size={12} />
+                  </a>
+                ) : (
+                  <span className="truncate">{label}</span>
+                )}
+                <span className="text-xs text-bauhaus-gray">
+                  {doc?.date ? formatDate(doc.date) : 'No date'}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
   }
 
   function toggleCalendarId(id: string) {
@@ -703,11 +835,27 @@ export default function DraftClaims() {
                   <DetailRow
                     label="Payment Proof"
                     value={
-                      <span className={cn(
-                        selectedDraft.status === 'pending' && !proofProvided && 'text-bauhaus-red'
-                      )}>
-                        {proofSummary}
-                      </span>
+                      selectedDraft.status === 'pending' ? (
+                        <button
+                          type="button"
+                          onClick={() => setDocumentsExpanded((prev) => !prev)}
+                          className={cn(
+                            'inline-flex items-center gap-2 text-sm font-medium',
+                            !proofProvided && 'text-bauhaus-red'
+                          )}
+                        >
+                          {proofSummary}
+                          <ChevronDown
+                            size={14}
+                            className={cn(
+                              'transition-transform',
+                              documentsExpanded && 'rotate-180'
+                            )}
+                          />
+                        </button>
+                      ) : (
+                        <span>{proofSummary}</span>
+                      )
                     }
                   />
                   {selectedDraft.treatmentDate && (
@@ -740,6 +888,130 @@ export default function DraftClaims() {
 
                 {selectedDraft.status === 'pending' ? (
                   <>
+                    <div className="mb-4">
+                      <button
+                        type="button"
+                        onClick={() => setDocumentsExpanded((prev) => !prev)}
+                        className="w-full flex items-center justify-between text-sm font-medium border-b border-bauhaus-lightgray pb-2"
+                      >
+                        <span>Documents</span>
+                        <span className="flex items-center gap-2 text-xs text-bauhaus-gray">
+                          {allDocumentIds.length} docs
+                          <ChevronDown
+                            size={16}
+                            className={cn(
+                              'transition-transform',
+                              documentsExpanded && 'rotate-180'
+                            )}
+                          />
+                        </span>
+                      </button>
+                      {documentsExpanded && (
+                        <div className="mt-3 space-y-3">
+                          {selectedDraft.primaryDocumentId &&
+                            renderDocumentGroup('Primary document', [
+                              selectedDraft.primaryDocumentId,
+                            ])}
+                          {renderDocumentGroup('Supporting documents', supportingDocumentIds)}
+                          {renderDocumentGroup('Proof documents', draftProofIds)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="border-t-2 border-bauhaus-black pt-4 mb-4">
+                      <h3 className="font-bold mb-3">Claim Details</h3>
+
+                      <div className="mb-3">
+                        <label className="block text-sm text-bauhaus-gray mb-1">Claim Type</label>
+                        <select
+                          value={claimType}
+                          onChange={(e) => setClaimType(e.target.value as ClaimType)}
+                          className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                        >
+                          <option value="Medical">Medical</option>
+                          <option value="Vision">Vision</option>
+                          <option value="Dental">Dental</option>
+                        </select>
+                      </div>
+
+                      <div className="mb-3">
+                        <label className="block text-sm text-bauhaus-gray mb-1">Country of Treatment</label>
+                        <input
+                          type="text"
+                          value={claimCountry}
+                          onChange={(e) => setClaimCountry(e.target.value)}
+                          className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                          placeholder="Country where care was received"
+                        />
+                      </div>
+
+                      <div className="mb-3">
+                        <label className="block text-sm text-bauhaus-gray mb-2">
+                          Symptoms / Diagnosis (up to 3)
+                        </label>
+                        <div className="space-y-2">
+                          {symptomInputs.map((value, index) => (
+                            <input
+                              key={`symptom-${index}`}
+                              type="text"
+                              value={value}
+                              onChange={(e) => {
+                                const next = [...symptomInputs];
+                                next[index] = e.target.value;
+                                setSymptomInputs(next);
+                              }}
+                              className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                              placeholder={`Symptom ${index + 1}`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="mb-3">
+                        <label className="block text-sm text-bauhaus-gray mb-1">Provider Name</label>
+                        <input
+                          type="text"
+                          value={providerName}
+                          onChange={(e) => setProviderName(e.target.value)}
+                          className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                          placeholder="Provider or clinic name"
+                        />
+                      </div>
+
+                      <div className="mb-3">
+                        <label className="block text-sm text-bauhaus-gray mb-1">Provider Address</label>
+                        <textarea
+                          value={providerAddress}
+                          onChange={(e) => setProviderAddress(e.target.value)}
+                          className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                          rows={2}
+                          placeholder="Street, city, postcode"
+                        />
+                      </div>
+
+                      <div className="mb-3">
+                        <label className="block text-sm text-bauhaus-gray mb-1">Provider Country</label>
+                        <input
+                          type="text"
+                          value={providerCountry}
+                          onChange={(e) => setProviderCountry(e.target.value)}
+                          className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                          placeholder="Country of provider"
+                        />
+                      </div>
+
+                      <div className="mb-3">
+                        <label className="block text-sm text-bauhaus-gray mb-1">
+                          Progress Report (Doctor Notes)
+                        </label>
+                        <textarea
+                          value={doctorNotes}
+                          onChange={(e) => setDoctorNotes(e.target.value)}
+                          className="w-full p-3 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+                          rows={4}
+                          placeholder="Summary of treatment and progress..."
+                        />
+                      </div>
+                    </div>
                     <div className="border-t-2 border-bauhaus-black pt-4 mb-4">
                       <h3 className="font-bold mb-3">Acceptance Details</h3>
 
@@ -768,17 +1040,6 @@ export default function DraftClaims() {
                           Selected patient: {selectedPatient?.name ?? 'Unknown'}
                         </p>
                       )}
-
-                      <div className="mb-3">
-                        <label className="block text-sm text-bauhaus-gray mb-1">Doctor Notes</label>
-                        <textarea
-                          value={doctorNotes}
-                          onChange={(e) => setDoctorNotes(e.target.value)}
-                          className="w-full p-3 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
-                          rows={3}
-                          placeholder="Add doctor notes or claim context..."
-                        />
-                      </div>
 
                       <div className="mb-3">
                         <label className="block text-sm text-bauhaus-gray mb-2">
@@ -1039,6 +1300,18 @@ export default function DraftClaims() {
                             <p className="text-sm">{selectedDraft.paymentProofText}</p>
                           </div>
                         )}
+                        <div className="mt-4">
+                          <button
+                            onClick={handleSubmitClaim}
+                            disabled={processing !== null}
+                            className={cn(
+                              'w-full flex items-center justify-center gap-2 px-4 py-3 bg-bauhaus-blue text-white font-medium hover:bg-bauhaus-blue/90 transition-colors',
+                              processing !== null && 'opacity-60 cursor-not-allowed'
+                            )}
+                          >
+                            {processing === 'submit' ? 'Submitting...' : 'Submit to Cigna'}
+                          </button>
+                        </div>
                       </>
                     )}
                     {selectedDraft.status === 'rejected' && (

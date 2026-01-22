@@ -10,12 +10,21 @@ import * as url from "node:url";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  claimsStorage,
-  archiveClaim,
-  unarchiveClaim,
-  getArchivedClaims,
-  getActiveClaims,
+  claimsStorage as scrapedClaimsStorage,
+  archiveClaim as archiveScrapedClaim,
+  unarchiveClaim as unarchiveScrapedClaim,
+  getArchivedClaims as getArchivedScrapedClaims,
+  getActiveClaims as getActiveScrapedClaims,
 } from "../storage/claims.js";
+import {
+  submittedClaimsStorage,
+  createSubmittedClaim,
+  updateSubmittedClaim,
+  archiveSubmittedClaim,
+  unarchiveSubmittedClaim,
+  getArchivedSubmittedClaims,
+  getActiveSubmittedClaims,
+} from "../storage/submitted-claims.js";
 import {
   documentsStorage,
   getMedicalBills,
@@ -79,10 +88,12 @@ import {
   startDocumentProcessingSchedule,
 } from "../services/document-processing-runner.js";
 import { CignaScraper } from "../services/cigna-scraper.js";
+import { CignaSubmitter } from "../services/cigna-submit.js";
 import { extractAndPrepareAccounts } from "../services/account-extractor.js";
 import type { CreatePatientInput, UpdatePatientInput } from "../types/patient.js";
 import type { CreateIllnessInput, UpdateIllnessInput } from "../types/illness.js";
 import type { DraftClaim, DraftClaimRange, DraftClaimDateSource } from "../types/draft-claim.js";
+import type { Claim } from "../types/claim.js";
 import type { MedicalDocument } from "../types/medical-document.js";
 import type {
   CreateArchiveRuleInput,
@@ -229,17 +240,17 @@ async function resolveTreatmentDate(
 // CLAIMS ROUTES
 // =============================================
 
-routes.GET["/api/claims"] = async () => claimsStorage.getAll();
+routes.GET["/api/claims"] = async () => submittedClaimsStorage.getAll();
 
 routes.GET["/api/claims/:id"] = async (_req, _res, params) => {
-  const claim = await claimsStorage.get(params.id!);
+  const claim = await submittedClaimsStorage.get(params.id!);
   requireEntity(claim, "Claim");
   return claim;
 };
 
-routes.GET["/api/claims/archived"] = async () => getArchivedClaims();
+routes.GET["/api/claims/archived"] = async () => getArchivedSubmittedClaims();
 
-routes.GET["/api/claims/active"] = async () => getActiveClaims();
+routes.GET["/api/claims/active"] = async () => getActiveSubmittedClaims();
 
 /** Archive or unarchive a claim */
 routes.PUT["/api/claims/:id/archive"] = async (_req, _res, params, body) => {
@@ -249,17 +260,55 @@ routes.PUT["/api/claims/:id/archive"] = async (_req, _res, params, body) => {
     httpError(400, "archived is required");
   }
 
-  const claim = await claimsStorage.get(params.id!);
+  const claim = await submittedClaimsStorage.get(params.id!);
   requireEntity(claim, "Claim");
 
   if (archived) {
-    const updated = await archiveClaim(params.id!);
+    const updated = await archiveSubmittedClaim(params.id!);
     requireEntity(updated, "Claim");
     return updated;
   }
 
-  const updated = await unarchiveClaim(params.id!);
+  const updated = await unarchiveSubmittedClaim(params.id!);
   requireEntity(updated, "Claim");
+  return updated;
+};
+
+// =============================================
+// SCRAPED CLAIMS ROUTES
+// =============================================
+
+routes.GET["/api/scraped-claims"] = async () => scrapedClaimsStorage.getAll();
+
+routes.GET["/api/scraped-claims/:id"] = async (_req, _res, params) => {
+  const claim = await scrapedClaimsStorage.get(params.id!);
+  requireEntity(claim, "Scraped claim");
+  return claim;
+};
+
+routes.GET["/api/scraped-claims/archived"] = async () => getArchivedScrapedClaims();
+
+routes.GET["/api/scraped-claims/active"] = async () => getActiveScrapedClaims();
+
+/** Archive or unarchive a scraped claim */
+routes.PUT["/api/scraped-claims/:id/archive"] = async (_req, _res, params, body) => {
+  const { archived } = body as { archived?: boolean };
+
+  if (archived === undefined) {
+    httpError(400, "archived is required");
+  }
+
+  const claim = await scrapedClaimsStorage.get(params.id!);
+  requireEntity(claim, "Scraped claim");
+
+  if (archived) {
+    const updated = await archiveScrapedClaim(params.id!);
+    requireEntity(updated, "Scraped claim");
+    return updated;
+  }
+
+  const updated = await unarchiveScrapedClaim(params.id!);
+  requireEntity(updated, "Scraped claim");
   return updated;
 };
 
@@ -718,6 +767,139 @@ routes.POST["/api/draft-claims/:id/accept"] = async (_req, _res, params, body) =
   return updated;
 };
 
+routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) => {
+  const { cignaId: bodyId, password: bodyPw, totpSecret: bodyTotp, headless: bodyHeadless } =
+    body as {
+      cignaId?: string;
+      password?: string;
+      totpSecret?: string;
+      headless?: boolean;
+    };
+
+  const cignaId = bodyId ?? process.env.CIGNA_ID;
+  const password = bodyPw ?? process.env.CIGNA_PASSWORD;
+  const totpSecret = bodyTotp ?? process.env.CIGNA_TOTP_SECRET;
+  const headless = bodyHeadless ?? true;
+
+  if (!cignaId || !password) {
+    httpError(400, "cignaId and password required (via body or CIGNA_ID/CIGNA_PASSWORD env vars)");
+  }
+
+  const draft = await draftClaimsStorage.get(params.id!);
+  requireEntity(draft, "Draft claim");
+
+  if (draft.status !== "accepted") {
+    httpError(400, "Draft claim must be accepted before submission");
+  }
+
+  if (!draft.illnessId) {
+    httpError(400, "Draft claim is missing illness");
+  }
+
+  const illness = await illnessesStorage.get(draft.illnessId);
+  requireEntity(illness, "Illness");
+
+  const patient = await patientsStorage.get(illness.patientId);
+  requireEntity(patient, "Patient");
+
+  const allDocumentIds = dedupeIds([
+    ...(draft.documentIds ?? []),
+    ...(draft.paymentProofDocumentIds ?? []),
+  ]);
+  const allDocuments = await Promise.all(allDocumentIds.map((id) => documentsStorage.get(id)));
+  const attachments = allDocuments
+    .filter((doc): doc is MedicalDocument => !!doc)
+    .filter((doc) => !!doc.attachmentPath)
+    .map((doc) => ({ filePath: doc.attachmentPath!, fileName: doc.filename }));
+
+  const submission = draft.submission ?? {};
+  const symptomNames =
+    submission.symptoms?.map((symptom) => symptom.name).filter(Boolean) ??
+    (illness.name ? [illness.name] : []);
+  const providerAccount =
+    illness.relevantAccounts?.find((account) => account.role === "provider") ??
+    illness.relevantAccounts?.[0];
+
+  const claimInput = {
+    draftClaimId: draft.id,
+    patientId: patient.id,
+    illnessId: illness.id,
+    documentIds: draft.documentIds ?? [],
+    proofDocumentIds: draft.paymentProofDocumentIds ?? [],
+    treatmentIds: draft.documentIds ?? [],
+    claimType: submission.claimType ?? "Medical",
+    symptoms:
+      submission.symptoms && submission.symptoms.length > 0
+        ? submission.symptoms
+        : illness.name
+          ? [{ name: illness.name, description: illness.icdCode ?? illness.name }]
+          : [],
+    totalAmount: draft.payment.amount,
+    currency: draft.payment.currency,
+    country:
+      submission.country ?? patient.workLocation ?? patient.citizenship ?? "Unknown",
+    notes: draft.doctorNotes,
+  };
+
+  const claim = await createSubmittedClaim(claimInput, "processing");
+
+  void (async () => {
+    const submitter = new CignaSubmitter({
+      cignaId,
+      password,
+      ...(totpSecret && { totpSecret }),
+      headless,
+    });
+
+    try {
+      const result = await submitter.run({
+        claimType: claim.claimType,
+        country: claim.country,
+        symptoms: symptomNames,
+        providerName: submission.providerName ?? providerAccount?.name ?? providerAccount?.email,
+        providerAddress: submission.providerAddress,
+        providerCountry:
+          submission.providerCountry ?? submission.country ?? patient.workLocation ?? patient.citizenship,
+        progressReport: submission.progressReport ?? draft.doctorNotes,
+        treatmentDate: draft.treatmentDate
+          ? new Date(draft.treatmentDate).toISOString().slice(0, 10)
+          : undefined,
+        totalAmount: claim.totalAmount,
+        currency: claim.currency,
+        patientName: patient.name,
+        documents: attachments,
+      });
+
+      await updateSubmittedClaim(claim.id, {
+        status: "submitted",
+        submittedAt: new Date(),
+        cignaClaimId: result.cignaClaimId,
+        submissionNumber: result.submissionNumber,
+        submissionUrl: result.submissionUrl,
+        claimUrl: result.claimUrl,
+        submissionLog: [
+          ...(claim.submissionLog ?? []),
+          `Submitted at ${new Date().toISOString()}`,
+        ],
+      });
+    } catch (err) {
+      await updateSubmittedClaim(claim.id, {
+        status: "draft",
+        submissionErrors: [
+          ...(claim.submissionErrors ?? []),
+          String(err),
+        ],
+        submissionLog: [
+          ...(claim.submissionLog ?? []),
+          `Submission failed at ${new Date().toISOString()}`,
+        ],
+      });
+    }
+  })();
+
+  return claim;
+};
+
 routes.POST["/api/draft-claims/:id/reject"] = async (_req, _res, params) => {
   const updated = await updateDraftClaim(params.id!, {
     status: "rejected",
@@ -741,12 +923,14 @@ routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
     calendarDocumentIds,
     paymentProofDocumentIds,
     paymentProofText,
+    submission,
   } = body as {
     illnessId?: string;
     doctorNotes?: string;
     calendarDocumentIds?: string[];
     paymentProofDocumentIds?: string[];
     paymentProofText?: string;
+    submission?: DraftClaim["submission"];
   };
 
   const draft = await draftClaimsStorage.get(params.id!);
@@ -796,6 +980,25 @@ routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
   if (paymentProofText !== undefined) {
     const trimmedProof = paymentProofText.trim();
     updates.paymentProofText = trimmedProof || undefined;
+  }
+
+  if (submission !== undefined || doctorNotes !== undefined) {
+    const nextSubmission = {
+      ...(draft.submission ?? {}),
+      ...(submission ?? {}),
+    };
+
+    if (doctorNotes !== undefined) {
+      const trimmedNotes = doctorNotes.trim();
+      nextSubmission.progressReport = trimmedNotes || undefined;
+    }
+
+    updates.submission = nextSubmission;
+
+    if (submission?.progressReport !== undefined && doctorNotes === undefined) {
+      const trimmedProgress = submission.progressReport.trim();
+      updates.doctorNotes = trimmedProgress || undefined;
+    }
   }
 
   if (calendarIds !== undefined || proofIds !== undefined) {

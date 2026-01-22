@@ -3,6 +3,10 @@
  * Represents locally generated claims based on payment evidence.
  */
 
+import type { ClaimType, Symptom } from "./claim.js";
+
+import type { ClaimType, Symptom } from "./claim.js";
+
 /**
  * Status of a draft claim in the workflow.
  */
@@ -80,6 +84,58 @@ export interface DraftClaimPayment {
 }
 
 /**
+ * Submission details needed to file a claim in Cigna.
+ */
+export interface DraftClaimSubmission {
+  /** Claim type (Medical, Vision, Dental) */
+  claimType?: ClaimType;
+
+  /** Country where care was received */
+  country?: string;
+
+  /** Symptoms/diagnoses (up to 3) */
+  symptoms?: Symptom[];
+
+  /** Provider name or clinic */
+  providerName?: string;
+
+  /** Provider address */
+  providerAddress?: string;
+
+  /** Provider country */
+  providerCountry?: string;
+
+  /** Progress report / doctor notes */
+  progressReport?: string;
+}
+
+/**
+ * Submission details required for creating a claim in Cigna Envoy.
+ */
+export interface DraftClaimSubmission {
+  /** Claim type (Medical, Vision, Dental) */
+  claimType?: ClaimType;
+
+  /** Country where care was received */
+  country?: string;
+
+  /** Symptoms/diagnoses (up to 3) */
+  symptoms?: Symptom[];
+
+  /** Provider name */
+  providerName?: string;
+
+  /** Provider address */
+  providerAddress?: string;
+
+  /** Provider country */
+  providerCountry?: string;
+
+  /** Progress report (same as doctor notes) */
+  progressReport?: string;
+}
+
+/**
  * Draft claim generated from documents.
  */
 export interface DraftClaim {
@@ -103,6 +159,12 @@ export interface DraftClaim {
 
   /** Manual proof-of-payment text supplied by the user */
   paymentProofText?: string;
+
+  /** Submission details captured before sending to Cigna */
+  submission?: DraftClaimSubmission;
+
+  /** Submission details for Cigna Envoy */
+  submission?: DraftClaimSubmission;
 
   /** Illness associated with this draft (required for acceptance) */
   illnessId?: string;
