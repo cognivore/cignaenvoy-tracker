@@ -2,7 +2,7 @@
  * Cigna Envoy Claim Submitter
  *
  * Selenium-based automation for submitting new claims.
- * 
+ *
  * COMPLETELY REWRITTEN based on real browser testing (2026-01-26).
  * See data/INTERNAL_BROWSER_REPORT.md for detailed flow documentation.
  */
@@ -21,7 +21,7 @@ const CIGNA_URLS = {
   newClaim: "https://customer.cignaenvoy.com/s/new-submitclaim?LanguageCode=en_GB&language=en_GB",
 } as const;
 
-/** 
+/**
  * Timeouts and delays - Cigna site is EXTREMELY SLOW
  * These values are based on real browser testing.
  */
@@ -171,12 +171,12 @@ export class CignaSubmitter {
       const filename = `${name}-${Date.now()}.png`;
       const filepath = path.join(DEBUG_DIR, filename);
       fs.writeFileSync(filepath, screenshot, "base64");
-      
+
       // Also save HTML
       const html = await this.driver.getPageSource();
       const htmlPath = path.join(DEBUG_DIR, `${name}.html`);
       fs.writeFileSync(htmlPath, html);
-      
+
       return filepath;
     } catch {
       return null;
@@ -322,10 +322,10 @@ export class CignaSubmitter {
   private async navigateToNewClaim(): Promise<void> {
     if (!this.driver) throw new Error("Driver not initialized");
     console.log("  Navigating to new claim form...");
-    
+
     await this.driver.get(CIGNA_URLS.newClaim);
     await sleep(CIGNA_TIMING.afterNavigation);
-    
+
     // Wait for patient selection page to load
     const loaded = await this.waitForPageText("Who are you claiming for");
     if (!loaded) {
@@ -344,7 +344,7 @@ export class CignaSubmitter {
 
     // Wait for patient cards to be visible
     await sleep(CIGNA_TIMING.afterNavigation);
-    
+
     const loaded = await this.waitForPageText(patientName);
     if (!loaded) {
       await this.takeDebugScreenshot("patient-not-found");
@@ -358,8 +358,8 @@ export class CignaSubmitter {
       for (const div of allDivs) {
         const style = window.getComputedStyle(div);
         const text = div.textContent || '';
-        if (style.cursor === 'pointer' && 
-            text.includes('${patientName}') && 
+        if (style.cursor === 'pointer' &&
+            text.includes('${patientName}') &&
             text.includes('Employee')) {
           const rect = div.getBoundingClientRect();
           // Must be a reasonably sized card
@@ -380,7 +380,7 @@ export class CignaSubmitter {
 
     console.log("  Clicked patient card, waiting for next step...");
     await sleep(CIGNA_TIMING.afterNavigation);
-    
+
     // Verify we moved to country selection (progress ~14%)
     const moved = await this.waitForPageText("Where did you receive care");
     if (!moved) {
@@ -434,7 +434,7 @@ export class CignaSubmitter {
     // Click Continue
     await this.clickContinueButton();
     await sleep(CIGNA_TIMING.afterNavigation);
-    
+
     const moved = await this.waitForPageText("Claim type");
     if (!moved) {
       await this.takeDebugScreenshot("country-no-nav");
@@ -478,7 +478,7 @@ export class CignaSubmitter {
 
     await this.clickContinueButton();
     await sleep(CIGNA_TIMING.afterNavigation);
-    
+
     const moved = await this.waitForPageText("outpatient or inpatient");
     if (!moved) {
       await this.takeDebugScreenshot("claim-type-no-nav");
@@ -524,7 +524,7 @@ export class CignaSubmitter {
     await this.driver.executeScript(`
       const labels = document.querySelectorAll('*');
       for (const label of labels) {
-        if (label.textContent && 
+        if (label.textContent &&
             label.textContent.includes('${treatmentType.slice(0, 20)}') &&
             !label.querySelector('input')) {
           label.click();
@@ -591,7 +591,7 @@ export class CignaSubmitter {
       // Expected format: "15/01/2026" or "15 Jan 2026"
       const dateMatch = input.treatmentDate.match(/(\d{1,2})/);
       const dayNum = dateMatch ? dateMatch[1] : "15";
-      
+
       // Click the day cell
       await this.driver.executeScript(`
         const cells = document.querySelectorAll('[role="gridcell"]');
@@ -608,7 +608,7 @@ export class CignaSubmitter {
 
     await this.clickContinueButton();
     await sleep(CIGNA_TIMING.afterNavigation);
-    
+
     const moved = await this.waitForPageText("symptoms or diagnosis");
     if (!moved) {
       await this.takeDebugScreenshot("details-no-nav");
@@ -701,7 +701,7 @@ export class CignaSubmitter {
       console.log("\n  ⏸️  PAUSED BEFORE SUBMIT");
       console.log("  Review the form in the browser.");
       console.log("  The submit button will be highlighted.");
-      
+
       // Highlight submit button
       await this.driver.executeScript(`
         const btns = document.querySelectorAll('button');
@@ -725,10 +725,10 @@ export class CignaSubmitter {
     // Try to find claim/submission numbers
     try {
       const pageText = await this.driver.executeScript(`return document.body.textContent;`) as string;
-      
+
       const claimMatch = pageText.match(/[Cc]laim\s*[Nn]umber[:\s]*(\d+)/);
       if (claimMatch) result.cignaClaimId = claimMatch[1];
-      
+
       const subMatch = pageText.match(/[Ss]ubmission\s*[Nn]umber[:\s]*(\d+)/);
       if (subMatch) result.submissionNumber = subMatch[1];
     } catch {}
@@ -748,7 +748,7 @@ export class CignaSubmitter {
     await this.selectClaimType(input.claimType);
     await this.fillClaimDetails(input);
     await this.enterSymptoms(input.symptoms);
-    
+
     // Provider details step (if applicable)
     // Document upload step
     if (input.documents.length > 0) {

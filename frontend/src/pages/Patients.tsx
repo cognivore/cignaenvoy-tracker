@@ -58,22 +58,25 @@ export default function Patients() {
   // Selected illness for detail view
   const [selectedIllness, setSelectedIllness] = useState<Illness | null>(null);
 
+  // Track selectedPatient.id to avoid reload loops when patient object reference changes
+  const selectedPatientId = selectedPatient?.id;
+
   useEffect(() => {
-    if (selectedPatient) {
-      loadPatientIllnesses(selectedPatient.id);
+    if (selectedPatientId) {
+      loadPatientIllnesses(selectedPatientId);
     } else {
       setPatientIllnesses([]);
       setSelectedIllness(null);
     }
-  }, [selectedPatient]);
+  }, [selectedPatientId]); // Only re-run when ID changes, not object reference
 
   useEffect(() => {
-    if (!selectedPatient) return;
-    const updated = patients.find((patient) => patient.id === selectedPatient.id);
+    if (!selectedPatientId) return;
+    const updated = patients.find((patient) => patient.id === selectedPatientId);
     if (updated && updated !== selectedPatient) {
       setSelectedPatient(updated);
     }
-  }, [patients, selectedPatient]);
+  }, [patients, selectedPatientId]); // Use ID, not object reference
 
   async function loadPatientIllnesses(patientId: string) {
     setLoadingIllnesses(true);

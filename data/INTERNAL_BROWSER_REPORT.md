@@ -1,8 +1,8 @@
 # Cigna Envoy Claim Submission Flow - Browser Test Report
 
-**Generated:** 2026-01-26 22:09 UTC  
-**Updated:** 2026-01-26 22:20 UTC - REWRITE TESTED & WORKING!  
-**Browser:** Internal Playwright-based browser  
+**Generated:** 2026-01-26 22:09 UTC
+**Updated:** 2026-01-26 22:20 UTC - REWRITE TESTED & WORKING!
+**Browser:** Internal Playwright-based browser
 **Account:** 88017286701 (EMILS PETRACENOKS)
 
 ## ✅ REWRITE STATUS: SUCCESS
@@ -13,7 +13,7 @@ The rewrite of `cigna-submit.ts` based on this report is **WORKING**!
 - ✅ Login successful
 - ✅ **Patient selection WORKING** (was the main blocker!)
 - ✅ Country selection working
-- ✅ Claim type selection working  
+- ✅ Claim type selection working
 - ✅ Claim details (outpatient, treatment, currency, cost, date) all working!
 - ⏸️ Symptoms step needs refinement (search didn't find "ME/CFS")
 
@@ -82,7 +82,7 @@ The Cigna Envoy site is **EXTREMELY SLOW**. All timing estimates assume worst-ca
 - **Part A - Outpatient/Inpatient:**
   - Dropdown: `combobox "Is it an outpatient or inpatient stay?*"`
   - Options: "Outpatient", "Inpatient"
-  
+
 - **Part B - Treatment Details (appears after Outpatient selected):**
   - **Treatment Type** (multi-checkbox group `group "Treatment Type*"`):
     - Chiropractic treatment
@@ -98,7 +98,7 @@ The Cigna Envoy site is **EXTREMELY SLOW**. All timing estimates assume worst-ca
   - **Currency:** `combobox "Currency*"` - Options like "UK POUND STERLING"
   - **Cost:** `textbox "What was the cost?*"` - Enter number, auto-formats to 2 decimals
   - **Treatment Date:** Use `button "Select Date"` to open date picker, then click date cell
-  
+
 - **Continue button:** `button "Continue"`
 - **Wait:** 10 seconds for Step 5 (check for progress ~57%)
 
@@ -175,7 +175,7 @@ async function selectDropdownOption(driver, dropdownLabel, optionText) {
   );
   await dropdown.click();
   await sleep(2000); // Wait for options to load
-  
+
   // Find and click option
   const option = await driver.findElement(
     By.xpath(`//option[contains(text(), '${optionText}')] | //*[role='option'][contains(text(), '${optionText}')]`)
@@ -196,7 +196,7 @@ async function selectDate(driver, dateStr) {
   const dateButton = await driver.findElement(By.xpath(`//button[contains(text(), 'Select Date')]`));
   await dateButton.click();
   await sleep(2000);
-  
+
   // Parse date and click the appropriate cell
   // Date cells have format like "Thu Jan 15 2026"
   const dateCell = await driver.findElement(By.xpath(`//gridcell[contains(@aria-label, '${dateStr}')]`));

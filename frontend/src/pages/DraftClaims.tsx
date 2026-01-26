@@ -479,10 +479,28 @@ export default function DraftClaims() {
     );
   }, [draftDocumentIds, draftProofIds, selectedDraft?.primaryDocumentId]);
 
+  // For form state (pending drafts)
   const selectedIllness = illnesses.find((illness) => illness.id === selectedIllnessId);
   const selectedPatient = selectedIllness
     ? patients.find((patient) => patient.id === selectedIllness.patientId)
     : undefined;
+
+  // For accepted/rejected drafts, look up from draft data directly
+  const draftIllness = selectedDraft?.illnessId
+    ? illnesses.find((illness) => illness.id === selectedDraft.illnessId)
+    : undefined;
+  const draftPatient = draftIllness
+    ? patients.find((patient) => patient.id === draftIllness.patientId)
+    : undefined;
+
+  // Helper to get patient name for a draft
+  const getPatientNameForDraft = useCallback((draft: DraftClaim): string | undefined => {
+    if (!draft.illnessId) return undefined;
+    const illness = illnesses.find((i) => i.id === draft.illnessId);
+    if (!illness) return undefined;
+    const patient = patients.find((p) => p.id === illness.patientId);
+    return patient?.name;
+  }, [illnesses, patients]);
   const proofText =
     selectedDraft?.status === 'pending'
       ? paymentProofNote.trim()
@@ -745,6 +763,7 @@ export default function DraftClaims() {
                 draft={draft}
                 document={documents.find((doc) => doc.id === draft.primaryDocumentId)}
                 selected={selectedDraft?.id === draft.id}
+                patientName={getPatientNameForDraft(draft)}
                 onClick={() => {
                   setSelectedDraft(draft);
                   resetDraftForm(draft);
@@ -762,6 +781,7 @@ export default function DraftClaims() {
                 draft={draft}
                 document={documents.find((doc) => doc.id === draft.primaryDocumentId)}
                 selected={selectedDraft?.id === draft.id}
+                patientName={getPatientNameForDraft(draft)}
                 onClick={() => {
                   setSelectedDraft(draft);
                   resetDraftForm(draft);
@@ -1263,7 +1283,8 @@ export default function DraftClaims() {
                   <div className="border-t-2 border-bauhaus-black pt-4">
                     {selectedDraft.status === 'accepted' && (
                       <>
-                        <DetailRow label="Illness" value={selectedIllness?.name ?? selectedDraft.illnessId ?? 'Unknown'} />
+                        <DetailRow label="Patient" value={draftPatient?.name ?? 'Unknown'} />
+                        <DetailRow label="Illness" value={draftIllness?.name ?? selectedDraft.illnessId ?? 'Unknown'} />
                         {selectedDraft.doctorNotes && (
                           <DetailRow label="Doctor Notes" value={selectedDraft.doctorNotes} />
                         )}
@@ -1354,11 +1375,13 @@ function DraftCard({
   document,
   selected,
   onClick,
+  patientName,
 }: {
   draft: DraftClaim;
   document?: MedicalDocument;
   selected: boolean;
   onClick: () => void;
+  patientName?: string;
 }) {
   const hasFile = document?.attachmentPath;
   const filename = document?.filename || 'Attachment';
@@ -1387,7 +1410,7 @@ function DraftCard({
       onClick={onClick}
       className={cn('bauhaus-card cursor-pointer', selected && 'ring-2 ring-bauhaus-blue')}
     >
-      {/* Header row: status + classification + date */}
+      {/* Header row: status + classification + patient + date */}
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-center gap-2 flex-wrap">
           <span
@@ -1406,6 +1429,11 @@ function DraftCard({
           >
             {classStyle.label}
           </span>
+          {patientName && (
+            <span className="px-1.5 py-0.5 text-xs font-medium bg-bauhaus-black text-white">
+              {patientName}
+            </span>
+          )}
         </div>
         <span className="text-xs text-bauhaus-gray flex-shrink-0">
           {draft.generatedAt ? formatDate(draft.generatedAt) : 'No date'}
