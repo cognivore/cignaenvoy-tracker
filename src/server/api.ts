@@ -768,18 +768,25 @@ routes.POST["/api/draft-claims/:id/accept"] = async (_req, _res, params, body) =
 };
 
 routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) => {
-  const { cignaId: bodyId, password: bodyPw, totpSecret: bodyTotp, headless: bodyHeadless } =
-    body as {
-      cignaId?: string;
-      password?: string;
-      totpSecret?: string;
-      headless?: boolean;
-    };
+  const {
+    cignaId: bodyId,
+    password: bodyPw,
+    totpSecret: bodyTotp,
+    headless: bodyHeadless,
+    pauseBeforeSubmit: bodyPause,
+  } = body as {
+    cignaId?: string;
+    password?: string;
+    totpSecret?: string;
+    headless?: boolean;
+    pauseBeforeSubmit?: boolean;
+  };
 
   const cignaId = bodyId ?? process.env.CIGNA_ID;
   const password = bodyPw ?? process.env.CIGNA_PASSWORD;
   const totpSecret = bodyTotp ?? process.env.CIGNA_TOTP_SECRET;
-  const headless = bodyHeadless ?? true;
+  const headless = bodyHeadless ?? false; // Default: visible browser
+  const pauseBeforeSubmit = bodyPause ?? true; // Default: pause for user to click submit
 
   if (!cignaId || !password) {
     httpError(400, "cignaId and password required (via body or CIGNA_ID/CIGNA_PASSWORD env vars)");
@@ -849,6 +856,7 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
       password,
       ...(totpSecret && { totpSecret }),
       headless,
+      pauseBeforeSubmit,
     });
 
     try {
@@ -882,6 +890,9 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
           `Submitted at ${new Date().toISOString()}`,
         ],
       });
+
+      // Clean up browser after successful submission
+      await submitter.cleanup();
     } catch (err) {
       await updateSubmittedClaim(claim.id, {
         status: "draft",
@@ -1130,7 +1141,7 @@ routes.GET["/api/stats"] = async () => {
 
   // Fallback to JSON file loading (slow)
   const [claims, documents, assignments, draftClaims] = await Promise.all([
-    claimsStorage.getAll(),
+    scrapedClaimsStorage.getAll(),
     documentsStorage.getAll(),
     assignmentsStorage.getAll(),
     draftClaimsStorage.getAll(),

@@ -1301,6 +1301,9 @@ export default function DraftClaims() {
                           </div>
                         )}
                         <div className="mt-4">
+                          <p className="text-xs text-bauhaus-gray mb-2">
+                            Opens a browser window, fills all fields, then pauses for you to review and click Submit.
+                          </p>
                           <button
                             onClick={handleSubmitClaim}
                             disabled={processing !== null}
@@ -1309,7 +1312,7 @@ export default function DraftClaims() {
                               processing !== null && 'opacity-60 cursor-not-allowed'
                             )}
                           >
-                            {processing === 'submit' ? 'Submitting...' : 'Submit to Cigna'}
+                            {processing === 'submit' ? 'Opening browser...' : 'Start Cigna Submission'}
                           </button>
                         </div>
                       </>

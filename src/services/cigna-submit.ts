@@ -41,7 +41,10 @@ export interface SubmitterConfig {
   cignaId: string;
   password: string;
   totpSecret?: string;
+  /** Run browser in headless mode (default: false - visible) */
   headless?: boolean;
+  /** Fill everything but pause before final submit (default: true) */
+  pauseBeforeSubmit?: boolean;
 }
 
 export interface ClaimSubmissionDocument {
@@ -103,12 +106,13 @@ function generateTOTP(secret: string): string {
 
 export class CignaSubmitter {
   private driver: WebDriver | null = null;
-  private config: Required<SubmitterConfig>;
+  private config: Required<Omit<SubmitterConfig, 'totpSecret'>> & { totpSecret?: string };
 
   constructor(config: SubmitterConfig) {
     this.config = {
       ...config,
-      headless: config.headless ?? true,
+      headless: config.headless ?? false, // Default: visible browser
+      pauseBeforeSubmit: config.pauseBeforeSubmit ?? true, // Default: pause for review
     };
   }
 
@@ -353,6 +357,43 @@ export class CignaSubmitter {
       "//input[@type='submit' and contains(@value, 'Submit')]",
     ];
 
+    // If pauseBeforeSubmit is enabled, highlight the button and wait for user
+    if (this.config.pauseBeforeSubmit) {
+      console.log("\n" + "=".repeat(60));
+      console.log("🛑 PAUSED BEFORE SUBMIT - Review the form in the browser");
+      console.log("=".repeat(60));
+      console.log("\nThe browser is ready for submission.");
+      console.log("Please review all fields, then CLICK THE SUBMIT BUTTON YOURSELF.");
+      console.log("\nAfter you submit, the script will capture the result.");
+      console.log("Waiting for submission confirmation page...\n");
+
+      // Try to highlight the submit button
+      for (const xpath of submitSelectors) {
+        try {
+          const btn = await this.driver.findElement(By.xpath(xpath));
+          await this.driver.executeScript(
+            `arguments[0].style.border = '4px solid red'; arguments[0].style.boxShadow = '0 0 20px red';`,
+            btn
+          );
+          break;
+        } catch {
+          // continue
+        }
+      }
+
+      // Wait for URL to change (indicates form was submitted)
+      const currentUrl = await this.driver.getCurrentUrl();
+      await this.driver.wait(async () => {
+        const newUrl = await this.driver!.getCurrentUrl();
+        return newUrl !== currentUrl;
+      }, 300000); // 5 minute timeout for user to review and submit
+
+      console.log("✅ Detected page change - capturing submission result...\n");
+      await this.waitSpinnersGone(TIMEOUTS.pageLoad);
+      return;
+    }
+
+    // Auto-submit mode
     for (const xpath of submitSelectors) {
       try {
         const btn = await this.waitVisible(By.xpath(xpath), TIMEOUTS.elementWait);
@@ -431,19 +472,48 @@ export class CignaSubmitter {
   }
 
   async run(input: ClaimSubmissionInput): Promise<SubmissionResult> {
+    console.log("\n🚀 Starting Cigna Envoy claim submission...");
+    console.log(`   Headless: ${this.config.headless}`);
+    console.log(`   Pause before submit: ${this.config.pauseBeforeSubmit}\n`);
+
     try {
       await this.init();
+      console.log("✓ Browser initialized");
+
       const loggedIn = await this.login();
       if (!loggedIn) {
         throw new Error("Failed to log in to Cigna Envoy");
       }
-      return await this.submitClaim(input);
+      console.log("✓ Logged in successfully");
+
+      const result = await this.submitClaim(input);
+      console.log("\n✅ Claim submitted successfully!");
+      if (result.cignaClaimId) console.log(`   Cigna Claim ID: ${result.cignaClaimId}`);
+      if (result.submissionNumber) console.log(`   Submission #: ${result.submissionNumber}`);
+      
+      return result;
     } catch (err) {
+      console.error("\n❌ Submission failed:", err);
       await this.captureDebugArtifacts("submit-claim-error");
+
+      // Keep browser open on error in non-headless mode so user can debug
+      if (!this.config.headless) {
+        console.log("\n⚠️  Browser kept open for debugging. Close it manually when done.");
+        // Don't close - let user investigate
+        throw err;
+      }
       throw err;
     } finally {
-      await this.close();
+      // Only auto-close in headless mode or on success
+      if (this.config.headless) {
+        await this.close();
+      }
     }
+  }
+
+  /** Manually close the browser (call after run() in non-headless mode) */
+  async cleanup(): Promise<void> {
+    await this.close();
   }
 }
 

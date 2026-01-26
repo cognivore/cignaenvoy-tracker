@@ -532,16 +532,19 @@ export const api = {
     }),
   submitDraftClaim: (
     id: string,
-    credentials?: {
+    options?: {
       cignaId?: string;
       password?: string;
       totpSecret?: string;
+      /** Run browser invisibly (default: false - visible) */
       headless?: boolean;
+      /** Pause before final submit for manual review (default: true) */
+      pauseBeforeSubmit?: boolean;
     }
   ) =>
     fetchJson<Claim>(`/draft-claims/${id}/submit`, {
       method: "POST",
-      body: JSON.stringify(credentials ?? {}),
+      body: JSON.stringify(options ?? {}),
     }),
   /** Auto-save partial updates to a pending draft claim */
   updateDraftClaim: (

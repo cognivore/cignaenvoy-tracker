@@ -64,7 +64,7 @@ setup_caddy_dirs() {
     mkdir -p "$CADDY_SITES_DIR"
     mkdir -p "$CADDY_LOGS_DIR"
     mkdir -p "$LOG_DIR"
-    
+
     # Create README if it doesn't exist
     if [[ ! -f "$CADDY_HOME/README.md" ]]; then
         cat > "$CADDY_HOME/README.md" << 'HEREDOC'
@@ -158,7 +158,7 @@ generate_caddy_plist() {
     # Find caddy binary from nix store (use any project that has it)
     local caddy_bin
     caddy_bin=$(nix develop "$PROJECT_DIR" --command which caddy 2>/dev/null || true)
-    
+
     if [[ -z "$caddy_bin" ]]; then
         error "Could not find caddy. Make sure it's in flake.nix"
         exit 1
@@ -419,7 +419,7 @@ do_uninstall() {
     # Check if any other sites remain
     local remaining_sites
     remaining_sites=$(find "$CADDY_SITES_DIR" -name "*.Caddyfile" 2>/dev/null | wc -l | tr -d ' ')
-    
+
     if [[ "$remaining_sites" -eq 0 ]]; then
         warn "No other *.localhost sites configured."
         echo -n "  Remove shared Caddy service too? [y/N] "
@@ -466,19 +466,29 @@ do_status() {
 
     echo ""
     header "Health Check"
-    if curl -s "http://localhost:${BACKEND_PORT}/api/stats" 2>/dev/null | grep -q "claims"; then
+    local backend_status
+    backend_status=$(
+        curl -s -o /dev/null -w "%{http_code}" \
+            "http://localhost:${BACKEND_PORT}/api/stats" 2>/dev/null || true
+    )
+    if [[ "$backend_status" == "200" ]]; then
         echo -e "  Backend API (${BACKEND_PORT}): ${GREEN}Healthy${NC}"
     else
         echo -e "  Backend API (${BACKEND_PORT}): ${RED}Not responding${NC}"
     fi
-    
+
     if curl -s "http://localhost:${FRONTEND_PORT}/" 2>/dev/null | grep -q -E "(html|script)"; then
         echo -e "  Frontend (${FRONTEND_PORT}): ${GREEN}Running${NC}"
     else
         echo -e "  Frontend (${FRONTEND_PORT}): ${RED}Not responding${NC}"
     fi
 
-    if curl -s "http://cigna.localhost/api/stats" 2>/dev/null | grep -q "claims"; then
+    local caddy_status
+    caddy_status=$(
+        curl -s -o /dev/null -w "%{http_code}" \
+            "http://cigna.localhost/api/stats" 2>/dev/null || true
+    )
+    if [[ "$caddy_status" == "200" ]]; then
         echo -e "  Caddy proxy: ${GREEN}Working${NC}"
     else
         echo -e "  Caddy proxy: ${RED}Not working${NC}"
