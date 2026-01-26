@@ -2,9 +2,12 @@
  * Cigna Envoy Claim Submitter
  *
  * Selenium-based automation for submitting new claims.
+ * 
+ * COMPLETELY REWRITTEN based on real browser testing (2026-01-26).
+ * See data/INTERNAL_BROWSER_REPORT.md for detailed flow documentation.
  */
 
-import { Builder, By, Key, until, WebDriver, WebElement } from "selenium-webdriver";
+import { Builder, By, until, WebDriver, WebElement } from "selenium-webdriver";
 import chrome from "selenium-webdriver/chrome.js";
 import crypto from "node:crypto";
 import * as fs from "node:fs";
@@ -15,24 +18,33 @@ import { ensureStorageDirs } from "../storage/index.js";
 const CIGNA_URLS = {
   login: "https://customer.cignaenvoy.com/CustomLogin",
   home: "https://customer.cignaenvoy.com/s/",
-  claims: "https://customer.cignaenvoy.com/s/claiminvoicesummary",
+  newClaim: "https://customer.cignaenvoy.com/s/new-submitclaim?LanguageCode=en_GB&language=en_GB",
 } as const;
 
-/** Default timeouts */
-const TIMEOUTS = {
-  pageLoad: 20000,
-  elementWait: 15000,
-  spinnerWait: 30000,
+/** 
+ * Timeouts and delays - Cigna site is EXTREMELY SLOW
+ * These values are based on real browser testing.
+ */
+const CIGNA_TIMING = {
+  pageLoad: 60000,         // 60s max for any page load
+  elementWait: 30000,      // 30s to find element
+  afterNavigation: 10000,  // 10s after clicking navigation
+  afterDropdown: 3000,     // 3s after opening dropdown
+  afterDatePicker: 2000,   // 2s after opening date picker
+  pollInterval: 2000,      // 2s between polls
 } as const;
 
-/** Salesforce/SPA spinner selectors */
-const SPINNER_SELECTORS = [
-  ".slds-spinner",
-  "[role='progressbar']",
-  ".slds-spinner_container",
-  ".loading-indicator",
-  ".forceSpinner",
-] as const;
+/** Expected progress values for each step */
+const STEP_PROGRESS = {
+  patient: 0,
+  country: 14,
+  claimType: 28,
+  details: 42,
+  symptoms: 57,
+  provider: 71,
+  upload: 85,
+  review: 100,
+} as const;
 
 /** Debug artifacts directory */
 const DEBUG_DIR = "./data/debug";
@@ -41,9 +53,7 @@ export interface SubmitterConfig {
   cignaId: string;
   password: string;
   totpSecret?: string;
-  /** Run browser in headless mode (default: false - visible) */
   headless?: boolean;
-  /** Fill everything but pause before final submit (default: true) */
   pauseBeforeSubmit?: boolean;
 }
 
@@ -64,6 +74,7 @@ export interface ClaimSubmissionInput {
   totalAmount?: number;
   currency?: string;
   patientName?: string;
+  treatmentType?: string;
   documents: ClaimSubmissionDocument[];
 }
 
@@ -91,50 +102,54 @@ function generateTOTP(secret: string): string {
 
   const counter = Math.floor(Date.now() / 30000);
   const counterBuf = Buffer.alloc(8);
-  counterBuf.writeBigInt64BE(BigInt(counter));
-  const hmac = crypto.createHmac("sha1", key).update(counterBuf).digest();
-  const offset = hmac[hmac.length - 1]! & 0xf;
-  const code =
-    (((hmac[offset]! & 0x7f) << 24) |
-      (hmac[offset + 1]! << 16) |
-      (hmac[offset + 2]! << 8) |
-      hmac[offset + 3]!) %
-    1000000;
+  counterBuf.writeBigUInt64BE(BigInt(counter));
 
-  return code.toString().padStart(6, "0");
+  const hmac = crypto.createHmac("sha1", key).update(counterBuf).digest();
+  const offset = hmac[hmac.length - 1] & 0xf;
+  const code =
+    ((hmac[offset] & 0x7f) << 24) |
+    ((hmac[offset + 1] & 0xff) << 16) |
+    ((hmac[offset + 2] & 0xff) << 8) |
+    (hmac[offset + 3] & 0xff);
+
+  return String(code % 1_000_000).padStart(6, "0");
 }
 
 export class CignaSubmitter {
   private driver: WebDriver | null = null;
-  private config: Required<Omit<SubmitterConfig, 'totpSecret'>> & { totpSecret?: string };
+  private config: SubmitterConfig;
 
   constructor(config: SubmitterConfig) {
     this.config = {
       ...config,
-      headless: config.headless ?? false, // Default: visible browser
-      pauseBeforeSubmit: config.pauseBeforeSubmit ?? true, // Default: pause for review
+      headless: config.headless ?? false,
+      pauseBeforeSubmit: config.pauseBeforeSubmit ?? true,
     };
   }
 
   async init(): Promise<void> {
+    await ensureStorageDirs();
+    fs.mkdirSync(DEBUG_DIR, { recursive: true });
+
     const options = new chrome.Options();
+    if (this.config.headless) {
+      options.addArguments("--headless=new");
+    }
     options.addArguments(
       "--no-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
-      "--window-size=1600,1200"
+      "--window-size=1280,1024",
+      "--disable-blink-features=AutomationControlled"
     );
-
-    if (this.config.headless) {
-      options.addArguments("--headless=new");
-    }
+    options.excludeSwitches("enable-automation");
 
     this.driver = await new Builder()
       .forBrowser("chrome")
-      .setChromeOptions(options as chrome.Options)
+      .setChromeOptions(options)
       .build();
 
-    ensureStorageDirs();
+    console.log("✓ Browser initialized");
   }
 
   async close(): Promise<void> {
@@ -144,391 +159,618 @@ export class CignaSubmitter {
     }
   }
 
-  private async waitVisible(locator: By, timeout: number = TIMEOUTS.elementWait): Promise<WebElement> {
-    if (!this.driver) throw new Error("Driver not initialized");
-    const el = await this.driver.wait(until.elementLocated(locator), timeout);
-    await this.driver.wait(until.elementIsVisible(el), timeout);
-    return el;
+  /** Alias for close() for backwards compatibility */
+  async cleanup(): Promise<void> {
+    await this.close();
   }
 
-  private async waitSpinnersGone(timeout: number = TIMEOUTS.spinnerWait): Promise<void> {
-    if (!this.driver) throw new Error("Driver not initialized");
-    const selector = SPINNER_SELECTORS.join(", ");
-    await this.driver.wait(async () => {
-      const spinners = await this.driver!.findElements(By.css(selector));
-      if (spinners.length === 0) return true;
-      const visibleChecks = await Promise.all(
-        spinners.map(async (el) => {
-          try {
-            return await el.isDisplayed();
-          } catch {
-            return false;
-          }
-        })
-      );
-      return visibleChecks.every((v) => !v);
-    }, timeout);
-  }
-
-  private async safeClick(element: WebElement): Promise<void> {
-    if (!this.driver) throw new Error("Driver not initialized");
-    await this.driver.wait(until.elementIsVisible(element), TIMEOUTS.elementWait);
-    await this.driver.wait(until.elementIsEnabled(element), TIMEOUTS.elementWait);
-    await element.click();
-  }
-
-  private async dismissCookieConsent(): Promise<void> {
-    if (!this.driver) return;
-    const selectors = [
-      "button#onetrust-accept-btn-handler",
-      "button[aria-label='Accept All Cookies']",
-    ];
-    for (const selector of selectors) {
-      try {
-        const btn = await this.driver.findElement(By.css(selector));
-        if (await btn.isDisplayed()) {
-          await this.safeClick(btn);
-          await sleep(1000);
-          return;
-        }
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  private async captureDebugArtifacts(tag: string): Promise<void> {
-    if (!this.driver) return;
+  private async takeDebugScreenshot(name: string): Promise<string | null> {
+    if (!this.driver) return null;
     try {
-      fs.mkdirSync(DEBUG_DIR, { recursive: true });
       const screenshot = await this.driver.takeScreenshot();
-      fs.writeFileSync(path.join(DEBUG_DIR, `${tag}.png`), screenshot, "base64");
+      const filename = `${name}-${Date.now()}.png`;
+      const filepath = path.join(DEBUG_DIR, filename);
+      fs.writeFileSync(filepath, screenshot, "base64");
+      
+      // Also save HTML
       const html = await this.driver.getPageSource();
-      fs.writeFileSync(path.join(DEBUG_DIR, `${tag}.html`), html, "utf-8");
+      const htmlPath = path.join(DEBUG_DIR, `${name}.html`);
+      fs.writeFileSync(htmlPath, html);
+      
+      return filepath;
     } catch {
-      // best effort
+      return null;
     }
   }
 
+  /**
+   * Poll until page contains specific text
+   */
+  private async waitForPageText(text: string, timeoutMs = CIGNA_TIMING.pageLoad): Promise<boolean> {
+    if (!this.driver) return false;
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const hasText = await this.driver.executeScript(
+          `return document.body.textContent.includes('${text.replace(/'/g, "\\'")}');`
+        );
+        if (hasText) return true;
+      } catch {}
+      await sleep(CIGNA_TIMING.pollInterval);
+    }
+    return false;
+  }
+
+  /**
+   * Get current progress percentage from progress bar
+   */
+  private async getProgress(): Promise<number> {
+    if (!this.driver) return -1;
+    try {
+      const progressText = await this.driver.executeScript(`
+        const progressEl = document.querySelector('[role="progressbar"]');
+        return progressEl ? progressEl.textContent : '';
+      `) as string;
+      const match = progressText.match(/Progress:\s*([\d.]+)%/);
+      return match ? Math.round(parseFloat(match[1])) : -1;
+    } catch {
+      return -1;
+    }
+  }
+
+  /**
+   * Wait for progress to reach expected value (with tolerance)
+   */
+  private async waitForProgress(expected: number, tolerance = 5): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < CIGNA_TIMING.pageLoad) {
+      const progress = await this.getProgress();
+      if (progress >= expected - tolerance && progress <= expected + tolerance + 20) {
+        return true;
+      }
+      await sleep(CIGNA_TIMING.pollInterval);
+    }
+    return false;
+  }
+
+  /**
+   * Type slowly to trigger JS validation (needed for TOTP)
+   */
+  private async typeSlowly(element: WebElement, text: string): Promise<void> {
+    for (const char of text) {
+      await element.sendKeys(char);
+      await sleep(50);
+    }
+  }
+
+  /**
+   * Dispatch input events (needed for Okta TOTP validation)
+   */
+  private async dispatchInputEvents(element: WebElement): Promise<void> {
+    await this.driver?.executeScript(`
+      const el = arguments[0];
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    `, element);
+  }
+
+  /**
+   * Login to Cigna Envoy
+   */
   async login(): Promise<boolean> {
     if (!this.driver) throw new Error("Driver not initialized");
+    console.log("  Logging in to Cigna Envoy...");
 
-    try {
-      await this.driver.get(CIGNA_URLS.login);
-      await this.waitSpinnersGone(TIMEOUTS.pageLoad);
-      await this.dismissCookieConsent();
+    await this.driver.get(CIGNA_URLS.login);
+    await sleep(3000);
 
-      const idInput = await this.waitVisible(
-        By.xpath(
-          "//input[@type='text' and (contains(@id, 'username') or contains(@name, 'username') or contains(@placeholder, 'ID') or contains(@aria-label, 'ID'))]"
-        ),
-        TIMEOUTS.elementWait
-      );
-      await idInput.clear();
-      await idInput.sendKeys(this.config.cignaId);
+    // Enter credentials
+    const idInput = await this.driver.wait(
+      until.elementLocated(By.css('input[name="username"], input[type="text"]')),
+      CIGNA_TIMING.elementWait
+    );
+    await idInput.clear();
+    await idInput.sendKeys(this.config.cignaId);
 
-      const passwordInput = await this.waitVisible(By.css('input[type="password"]'), TIMEOUTS.elementWait);
-      await passwordInput.clear();
-      await passwordInput.sendKeys(this.config.password);
+    const pwInput = await this.driver.findElement(By.css('input[type="password"]'));
+    await pwInput.clear();
+    await pwInput.sendKeys(this.config.password);
 
-      const loginBtn = await this.waitVisible(
-        By.xpath("//button[contains(text(), 'Login')] | //input[@type='submit' and @value='Login']"),
-        TIMEOUTS.elementWait
-      );
-      await this.safeClick(loginBtn);
+    // Click login
+    const loginBtn = await this.driver.findElement(By.css('button[type="submit"], button'));
+    await loginBtn.click();
+    console.log("  Credentials entered, waiting for response...");
+    await sleep(5000);
 
-      await this.waitSpinnersGone(TIMEOUTS.pageLoad);
+    // Handle TOTP if needed
+    const currentUrl = await this.driver.getCurrentUrl();
+    if (currentUrl.includes("okta") || currentUrl.includes("mfa") || currentUrl.includes("factor")) {
+      if (!this.config.totpSecret) {
+        console.log("  Waiting for TOTP input...");
+        await sleep(60000);
+      } else {
+        console.log("  Entering TOTP...");
+        const totpInput = await this.driver.wait(
+          until.elementLocated(By.css('input[type="text"], input[name="answer"]')),
+          CIGNA_TIMING.elementWait
+        );
+        await totpInput.clear();
+        await this.typeSlowly(totpInput, generateTOTP(this.config.totpSecret));
+        await this.dispatchInputEvents(totpInput);
+        await sleep(1000);
 
-      if (this.config.totpSecret) {
+        // Click verify
         try {
-          const totpInput = await this.driver.wait(
-            until.elementLocated(
-              By.css('input[name="answer"], input[name="otp"], input[type="tel"][autocomplete="off"]')
-            ),
-            TIMEOUTS.elementWait
+          const verifyBtn = await this.driver.findElement(
+            By.xpath("//button[contains(text(), 'Verify')] | //input[@type='submit']")
           );
-          await this.driver.wait(until.elementIsVisible(totpInput), TIMEOUTS.elementWait);
-          await totpInput.click();
-          await sleep(200);
-          await totpInput.clear();
-          await totpInput.sendKeys(generateTOTP(this.config.totpSecret));
+          await verifyBtn.click();
+        } catch {}
+        await sleep(10000);
+      }
+    }
 
-          const verifyBtn = await this.driver.wait(
-            until.elementLocated(By.css('input[type="submit"][value="Verify"], button[data-type="save"]')),
-            TIMEOUTS.elementWait
-          );
-          await this.safeClick(verifyBtn);
-          await this.waitSpinnersGone(TIMEOUTS.pageLoad);
-        } catch (err) {
-          console.log("MFA handling issue:", err);
+    // Wait for home page
+    await this.driver.wait(until.urlContains(CIGNA_URLS.home), CIGNA_TIMING.pageLoad);
+    console.log("  ✓ Logged in successfully");
+    return true;
+  }
+
+  /**
+   * Navigate to new claim form and wait for patient selection page
+   */
+  private async navigateToNewClaim(): Promise<void> {
+    if (!this.driver) throw new Error("Driver not initialized");
+    console.log("  Navigating to new claim form...");
+    
+    await this.driver.get(CIGNA_URLS.newClaim);
+    await sleep(CIGNA_TIMING.afterNavigation);
+    
+    // Wait for patient selection page to load
+    const loaded = await this.waitForPageText("Who are you claiming for");
+    if (!loaded) {
+      await this.takeDebugScreenshot("nav-to-claim-failed");
+      throw new Error("Failed to navigate to claim form");
+    }
+    console.log("  ✓ Claim form loaded");
+  }
+
+  /**
+   * Step 1: Select patient using cursor:pointer detection
+   */
+  private async selectPatient(patientName = "EMILS PETRACENOKS"): Promise<void> {
+    if (!this.driver) throw new Error("Driver not initialized");
+    console.log(`  Step 1: Selecting patient "${patientName}"...`);
+
+    // Wait for patient cards to be visible
+    await sleep(CIGNA_TIMING.afterNavigation);
+    
+    const loaded = await this.waitForPageText(patientName);
+    if (!loaded) {
+      await this.takeDebugScreenshot("patient-not-found");
+      throw new Error(`Patient "${patientName}" not found on page`);
+    }
+
+    // Use JavaScript to find and click the patient card
+    // Cards have cursor:pointer style on the clickable container
+    const clicked = await this.driver.executeScript(`
+      const allDivs = document.querySelectorAll('*');
+      for (const div of allDivs) {
+        const style = window.getComputedStyle(div);
+        const text = div.textContent || '';
+        if (style.cursor === 'pointer' && 
+            text.includes('${patientName}') && 
+            text.includes('Employee')) {
+          const rect = div.getBoundingClientRect();
+          // Must be a reasonably sized card
+          if (rect.width > 200 && rect.height > 50 && rect.height < 200) {
+            console.log('Found patient card:', div.tagName, rect.width, rect.height);
+            div.click();
+            return true;
+          }
         }
       }
-
-      const finalUrl = await this.driver.getCurrentUrl();
-      return finalUrl.includes("/s/");
-    } catch (err) {
-      console.error("Login failed with error:", err);
-      await this.captureDebugArtifacts("submit-login-error");
       return false;
+    `);
+
+    if (!clicked) {
+      await this.takeDebugScreenshot("patient-click-failed");
+      throw new Error("Failed to click patient card");
     }
+
+    console.log("  Clicked patient card, waiting for next step...");
+    await sleep(CIGNA_TIMING.afterNavigation);
+    
+    // Verify we moved to country selection (progress ~14%)
+    const moved = await this.waitForPageText("Where did you receive care");
+    if (!moved) {
+      await this.takeDebugScreenshot("patient-select-no-nav");
+      throw new Error("Patient selection did not navigate to next step");
+    }
+    console.log("  ✓ Patient selected");
   }
 
-  private async navigateToSubmitClaim(): Promise<void> {
+  /**
+   * Step 2: Select country
+   */
+  private async selectCountry(country: string): Promise<void> {
     if (!this.driver) throw new Error("Driver not initialized");
-    await this.driver.get(CIGNA_URLS.claims);
-    await this.waitSpinnersGone(TIMEOUTS.pageLoad);
-    await this.dismissCookieConsent();
+    console.log(`  Step 2: Selecting country "${country}"...`);
 
-    const submitSelectors = [
-      "//a[contains(text(), 'Submit') and contains(text(), 'Claim')]",
-      "//button[contains(text(), 'Submit') and contains(text(), 'Claim')]",
-      "//a[contains(text(), 'New') and contains(text(), 'Claim')]",
-      "//button[contains(text(), 'New') and contains(text(), 'Claim')]",
-    ];
-
-    for (const xpath of submitSelectors) {
-      try {
-        const btn = await this.waitVisible(By.xpath(xpath), TIMEOUTS.elementWait);
-        await this.safeClick(btn);
-        await this.waitSpinnersGone(TIMEOUTS.pageLoad);
-        return;
-      } catch {
-        // try next
+    // Click the country dropdown
+    const dropdown = await this.driver.executeScript(`
+      const combos = document.querySelectorAll('[role="combobox"]');
+      for (const c of combos) {
+        if (c.textContent.includes('Select a country') || c.getAttribute('aria-label')?.includes('country')) {
+          c.click();
+          return true;
+        }
       }
-    }
+      return false;
+    `);
 
-    throw new Error("Unable to locate Submit Claim button");
+    if (!dropdown) {
+      throw new Error("Country dropdown not found");
+    }
+    await sleep(CIGNA_TIMING.afterDropdown);
+
+    // Select the country option
+    const selected = await this.driver.executeScript(`
+      const options = document.querySelectorAll('[role="option"]');
+      for (const opt of options) {
+        if (opt.textContent.toUpperCase().includes('${country.toUpperCase()}')) {
+          opt.click();
+          return true;
+        }
+      }
+      return false;
+    `);
+
+    if (!selected) {
+      throw new Error(`Country "${country}" not found in dropdown`);
+    }
+    await sleep(1000);
+
+    // Click Continue
+    await this.clickContinueButton();
+    await sleep(CIGNA_TIMING.afterNavigation);
+    
+    const moved = await this.waitForPageText("Claim type");
+    if (!moved) {
+      await this.takeDebugScreenshot("country-no-nav");
+      throw new Error("Country selection did not navigate to next step");
+    }
+    console.log("  ✓ Country selected");
   }
 
-  private async setInputByLabel(labelText: string, value?: string): Promise<void> {
-    if (!this.driver || !value) return;
+  /**
+   * Step 3: Select claim type
+   */
+  private async selectClaimType(claimType: string): Promise<void> {
+    if (!this.driver) throw new Error("Driver not initialized");
+    console.log(`  Step 3: Selecting claim type "${claimType}"...`);
 
-    const label = await this.driver.findElement(
-      By.xpath(`//label[contains(normalize-space(.), '${labelText}')]`)
-    );
-    const forId = await label.getAttribute("for");
-    let input: WebElement | null = null;
+    // Click claim type dropdown
+    await this.driver.executeScript(`
+      const combos = document.querySelectorAll('[role="combobox"]');
+      for (const c of combos) {
+        if (c.textContent.includes('Claim type') || c.getAttribute('aria-label')?.includes('Claim type')) {
+          c.click();
+          return true;
+        }
+      }
+      // Try any combobox on the page
+      if (combos.length > 0) combos[0].click();
+    `);
+    await sleep(CIGNA_TIMING.afterDropdown);
 
-    if (forId) {
-      input = await this.driver.findElement(By.id(forId));
-    } else {
-      const candidate = await label.findElements(By.css("input, textarea, select"));
-      if (candidate.length > 0) input = candidate[0];
+    // Select option
+    await this.driver.executeScript(`
+      const options = document.querySelectorAll('[role="option"]');
+      for (const opt of options) {
+        if (opt.textContent.toLowerCase().includes('${claimType.toLowerCase()}')) {
+          opt.click();
+          return true;
+        }
+      }
+    `);
+    await sleep(1000);
+
+    await this.clickContinueButton();
+    await sleep(CIGNA_TIMING.afterNavigation);
+    
+    const moved = await this.waitForPageText("outpatient or inpatient");
+    if (!moved) {
+      await this.takeDebugScreenshot("claim-type-no-nav");
+      throw new Error("Claim type selection did not navigate to next step");
+    }
+    console.log("  ✓ Claim type selected");
+  }
+
+  /**
+   * Step 4: Fill claim details (outpatient, treatment type, cost, date)
+   */
+  private async fillClaimDetails(input: ClaimSubmissionInput): Promise<void> {
+    if (!this.driver) throw new Error("Driver not initialized");
+    console.log("  Step 4: Filling claim details...");
+
+    // Select Outpatient
+    await this.driver.executeScript(`
+      const combos = document.querySelectorAll('[role="combobox"]');
+      for (const c of combos) {
+        if (c.textContent.includes('outpatient') || c.getAttribute('aria-label')?.includes('outpatient')) {
+          c.click();
+          return;
+        }
+      }
+      if (combos.length > 0) combos[0].click();
+    `);
+    await sleep(CIGNA_TIMING.afterDropdown);
+
+    await this.driver.executeScript(`
+      const options = document.querySelectorAll('[role="option"]');
+      for (const opt of options) {
+        if (opt.textContent.toLowerCase().includes('outpatient')) {
+          opt.click();
+          return;
+        }
+      }
+    `);
+    await sleep(3000); // Wait for additional fields to appear
+
+    // Select treatment type by clicking label
+    const treatmentType = input.treatmentType || "Consultation with medical practitioner";
+    console.log(`    Selecting treatment type: ${treatmentType}`);
+    await this.driver.executeScript(`
+      const labels = document.querySelectorAll('*');
+      for (const label of labels) {
+        if (label.textContent && 
+            label.textContent.includes('${treatmentType.slice(0, 20)}') &&
+            !label.querySelector('input')) {
+          label.click();
+          return true;
+        }
+      }
+    `);
+    await sleep(1000);
+
+    // Select currency
+    if (input.currency) {
+      console.log(`    Selecting currency: ${input.currency}`);
+      await this.driver.executeScript(`
+        const combos = document.querySelectorAll('[role="combobox"]');
+        for (const c of combos) {
+          if (c.textContent.includes('Currency') || c.getAttribute('aria-label')?.includes('Currency')) {
+            c.click();
+            break;
+          }
+        }
+      `);
+      await sleep(CIGNA_TIMING.afterDropdown);
+
+      await this.driver.executeScript(`
+        const options = document.querySelectorAll('[role="option"]');
+        for (const opt of options) {
+          if (opt.textContent.toUpperCase().includes('${input.currency.toUpperCase()}') ||
+              opt.textContent.toUpperCase().includes('STERLING')) {
+            opt.click();
+            return;
+          }
+        }
+      `);
+      await sleep(1000);
     }
 
-    if (!input) {
-      input = await this.driver.findElement(
-        By.xpath(`//label[contains(normalize-space(.), '${labelText}')]/following::input[1]`)
+    // Enter cost
+    if (input.totalAmount) {
+      console.log(`    Entering cost: ${input.totalAmount}`);
+      const costInput = await this.driver.findElement(
+        By.xpath("//input[contains(@aria-label, 'cost')] | //input[@placeholder]")
       );
+      await costInput.clear();
+      await costInput.sendKeys(String(input.totalAmount));
+      await sleep(500);
     }
 
-    await input.clear();
-    await input.sendKeys(value);
-  }
+    // Select treatment date using date picker
+    if (input.treatmentDate) {
+      console.log(`    Selecting date: ${input.treatmentDate}`);
+      // Click the Select Date button
+      await this.driver.executeScript(`
+        const btns = document.querySelectorAll('button');
+        for (const btn of btns) {
+          if (btn.textContent.includes('Select Date')) {
+            btn.click();
+            return true;
+          }
+        }
+      `);
+      await sleep(CIGNA_TIMING.afterDatePicker);
 
-  private async setMultiSelectByLabel(labelText: string, values: string[]): Promise<void> {
-    if (!this.driver || values.length === 0) return;
-    const input = await this.driver.findElement(
-      By.xpath(`//*[contains(text(), '${labelText}')]/following::input[1]`)
-    );
-    await input.click();
-    for (const value of values) {
-      await input.sendKeys(value, Key.ENTER);
-      await sleep(200);
+      // Parse date and find the cell
+      // Expected format: "15/01/2026" or "15 Jan 2026"
+      const dateMatch = input.treatmentDate.match(/(\d{1,2})/);
+      const dayNum = dateMatch ? dateMatch[1] : "15";
+      
+      // Click the day cell
+      await this.driver.executeScript(`
+        const cells = document.querySelectorAll('[role="gridcell"]');
+        for (const cell of cells) {
+          const text = cell.textContent.trim();
+          if (text === '${dayNum}' && !cell.hasAttribute('disabled')) {
+            cell.click();
+            return true;
+          }
+        }
+      `);
+      await sleep(1000);
     }
+
+    await this.clickContinueButton();
+    await sleep(CIGNA_TIMING.afterNavigation);
+    
+    const moved = await this.waitForPageText("symptoms or diagnosis");
+    if (!moved) {
+      await this.takeDebugScreenshot("details-no-nav");
+      throw new Error("Claim details did not navigate to next step");
+    }
+    console.log("  ✓ Claim details filled");
   }
 
+  /**
+   * Step 5: Enter symptoms/diagnosis
+   */
+  private async enterSymptoms(symptoms: string[]): Promise<void> {
+    if (!this.driver) throw new Error("Driver not initialized");
+    console.log(`  Step 5: Entering symptoms: ${symptoms.join(", ")}...`);
+
+    for (const symptom of symptoms.slice(0, 3)) {
+      // Find and click the search combobox
+      const searchBox = await this.driver.findElement(
+        By.xpath("//input[@role='combobox'] | //input[contains(@placeholder, 'typing')]")
+      );
+      await searchBox.clear();
+      await searchBox.sendKeys(symptom);
+      await sleep(2000);
+
+      // Select first result
+      await this.driver.executeScript(`
+        const options = document.querySelectorAll('[role="option"]');
+        if (options.length > 0) {
+          options[0].click();
+          return true;
+        }
+      `);
+      await sleep(1000);
+    }
+
+    await this.clickContinueButton();
+    await sleep(CIGNA_TIMING.afterNavigation);
+    console.log("  ✓ Symptoms entered");
+  }
+
+  /**
+   * Click the Continue button
+   */
+  private async clickContinueButton(): Promise<void> {
+    if (!this.driver) return;
+    await this.driver.executeScript(`
+      const btns = document.querySelectorAll('button');
+      for (const btn of btns) {
+        if (btn.textContent.includes('Continue') && !btn.disabled) {
+          btn.click();
+          return true;
+        }
+      }
+    `);
+  }
+
+  /**
+   * Upload documents
+   */
   private async uploadDocuments(documents: ClaimSubmissionDocument[]): Promise<void> {
     if (!this.driver) throw new Error("Driver not initialized");
-    if (documents.length === 0) return;
+    console.log(`  Uploading ${documents.length} documents...`);
 
-    const fileInput = await this.waitVisible(By.css("input[type='file']"), TIMEOUTS.elementWait);
-    const paths = documents.map((doc) => doc.filePath);
-    await fileInput.sendKeys(paths.join("\n"));
-    await this.waitSpinnersGone(TIMEOUTS.spinnerWait);
+    for (const doc of documents) {
+      if (!fs.existsSync(doc.filePath)) {
+        console.log(`    Skipping missing file: ${doc.filePath}`);
+        continue;
+      }
+
+      try {
+        const fileInput = await this.driver.findElement(By.css('input[type="file"]'));
+        await fileInput.sendKeys(path.resolve(doc.filePath));
+        console.log(`    Uploaded: ${doc.fileName || path.basename(doc.filePath)}`);
+        await sleep(3000);
+      } catch (err) {
+        console.log(`    Failed to upload ${doc.filePath}: ${err}`);
+      }
+    }
+    console.log("  ✓ Documents uploaded");
   }
 
-  private async confirmAndSubmit(): Promise<void> {
+  /**
+   * Final review and submit (or pause before submit)
+   */
+  private async reviewAndSubmit(): Promise<SubmissionResult> {
     if (!this.driver) throw new Error("Driver not initialized");
+    console.log("  Final review...");
 
-    const submitSelectors = [
-      "//button[contains(text(), 'Submit')]",
-      "//button[contains(text(), 'Confirm')]",
-      "//input[@type='submit' and contains(@value, 'Submit')]",
-    ];
-
-    // If pauseBeforeSubmit is enabled, highlight the button and wait for user
     if (this.config.pauseBeforeSubmit) {
-      console.log("\n" + "=".repeat(60));
-      console.log("🛑 PAUSED BEFORE SUBMIT - Review the form in the browser");
-      console.log("=".repeat(60));
-      console.log("\nThe browser is ready for submission.");
-      console.log("Please review all fields, then CLICK THE SUBMIT BUTTON YOURSELF.");
-      console.log("\nAfter you submit, the script will capture the result.");
-      console.log("Waiting for submission confirmation page...\n");
-
-      // Try to highlight the submit button
-      for (const xpath of submitSelectors) {
-        try {
-          const btn = await this.driver.findElement(By.xpath(xpath));
-          await this.driver.executeScript(
-            `arguments[0].style.border = '4px solid red'; arguments[0].style.boxShadow = '0 0 20px red';`,
-            btn
-          );
-          break;
-        } catch {
-          // continue
+      console.log("\n  ⏸️  PAUSED BEFORE SUBMIT");
+      console.log("  Review the form in the browser.");
+      console.log("  The submit button will be highlighted.");
+      
+      // Highlight submit button
+      await this.driver.executeScript(`
+        const btns = document.querySelectorAll('button');
+        for (const btn of btns) {
+          if (btn.textContent.toLowerCase().includes('submit')) {
+            btn.style.border = '5px solid red';
+            btn.style.backgroundColor = 'yellow';
+          }
         }
-      }
+      `);
 
-      // Wait for URL to change (indicates form was submitted)
-      const currentUrl = await this.driver.getCurrentUrl();
-      await this.driver.wait(async () => {
-        const newUrl = await this.driver!.getCurrentUrl();
-        return newUrl !== currentUrl;
-      }, 300000); // 5 minute timeout for user to review and submit
-
-      console.log("✅ Detected page change - capturing submission result...\n");
-      await this.waitSpinnersGone(TIMEOUTS.pageLoad);
-      return;
+      console.log("  Waiting 5 minutes for manual review...");
+      await sleep(300000);
     }
 
-    // Auto-submit mode
-    for (const xpath of submitSelectors) {
-      try {
-        const btn = await this.waitVisible(By.xpath(xpath), TIMEOUTS.elementWait);
-        await this.safeClick(btn);
-        await this.waitSpinnersGone(TIMEOUTS.pageLoad);
-        return;
-      } catch {
-        // try next
-      }
-    }
+    // Extract result from current page
+    const result: SubmissionResult = {
+      submissionUrl: await this.driver.getCurrentUrl(),
+    };
 
-    throw new Error("Unable to locate Submit/Confirm button");
-  }
+    // Try to find claim/submission numbers
+    try {
+      const pageText = await this.driver.executeScript(`return document.body.textContent;`) as string;
+      
+      const claimMatch = pageText.match(/[Cc]laim\s*[Nn]umber[:\s]*(\d+)/);
+      if (claimMatch) result.cignaClaimId = claimMatch[1];
+      
+      const subMatch = pageText.match(/[Ss]ubmission\s*[Nn]umber[:\s]*(\d+)/);
+      if (subMatch) result.submissionNumber = subMatch[1];
+    } catch {}
 
-  private async extractSubmissionResult(): Promise<SubmissionResult> {
-    if (!this.driver) throw new Error("Driver not initialized");
-    const result: SubmissionResult = { submissionUrl: await this.driver.getCurrentUrl() };
-
-    const claimNumberSelectors = [
-      "//span[contains(text(), 'Claim Number')]/following::span[1]",
-      "//*[contains(text(), 'Claim Number')]/following::*[1]",
-    ];
-    for (const xpath of claimNumberSelectors) {
-      try {
-        const el = await this.driver.findElement(By.xpath(xpath));
-        const text = await el.getText();
-        if (text) {
-          result.cignaClaimId = text.trim();
-          break;
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    const submissionNumberSelectors = [
-      "//span[contains(text(), 'Submission')]/following::span[1]",
-      "//*[contains(text(), 'Submission')]/following::*[1]",
-    ];
-    for (const xpath of submissionNumberSelectors) {
-      try {
-        const el = await this.driver.findElement(By.xpath(xpath));
-        const text = await el.getText();
-        if (text) {
-          result.submissionNumber = text.trim();
-          break;
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    result.claimUrl = result.submissionUrl;
     return result;
   }
 
+  /**
+   * Main submission flow
+   */
   async submitClaim(input: ClaimSubmissionInput): Promise<SubmissionResult> {
     if (!this.driver) throw new Error("Driver not initialized");
 
-    await this.navigateToSubmitClaim();
+    await this.navigateToNewClaim();
+    await this.selectPatient(input.patientName);
+    await this.selectCountry(input.country);
+    await this.selectClaimType(input.claimType);
+    await this.fillClaimDetails(input);
+    await this.enterSymptoms(input.symptoms);
+    
+    // Provider details step (if applicable)
+    // Document upload step
+    if (input.documents.length > 0) {
+      await this.uploadDocuments(input.documents);
+    }
 
-    await this.setInputByLabel("Claim Type", input.claimType);
-    await this.setInputByLabel("Country", input.country);
-    await this.setMultiSelectByLabel("Symptoms", input.symptoms);
-    await this.setInputByLabel("Provider Name", input.providerName);
-    await this.setInputByLabel("Provider Address", input.providerAddress);
-    await this.setInputByLabel("Provider Country", input.providerCountry);
-    await this.setInputByLabel("Progress Report", input.progressReport);
-    await this.setInputByLabel("Treatment Date", input.treatmentDate);
-
-    await this.uploadDocuments(input.documents);
-
-    await this.confirmAndSubmit();
-
-    return this.extractSubmissionResult();
+    return await this.reviewAndSubmit();
   }
 
+  /**
+   * Full run: init, login, submit, close
+   */
   async run(input: ClaimSubmissionInput): Promise<SubmissionResult> {
-    console.log("\n🚀 Starting Cigna Envoy claim submission...");
-    console.log(`   Headless: ${this.config.headless}`);
-    console.log(`   Pause before submit: ${this.config.pauseBeforeSubmit}\n`);
-
     try {
       await this.init();
-      console.log("✓ Browser initialized");
-
-      const loggedIn = await this.login();
-      if (!loggedIn) {
-        throw new Error("Failed to log in to Cigna Envoy");
-      }
-      console.log("✓ Logged in successfully");
-
-      const result = await this.submitClaim(input);
-      console.log("\n✅ Claim submitted successfully!");
-      if (result.cignaClaimId) console.log(`   Cigna Claim ID: ${result.cignaClaimId}`);
-      if (result.submissionNumber) console.log(`   Submission #: ${result.submissionNumber}`);
-      
-      return result;
-    } catch (err) {
-      console.error("\n❌ Submission failed:", err);
-      await this.captureDebugArtifacts("submit-claim-error");
-
-      // Keep browser open on error in non-headless mode so user can debug
-      if (!this.config.headless) {
-        console.log("\n⚠️  Browser kept open for debugging. Close it manually when done.");
-        // Don't close - let user investigate
-        throw err;
-      }
-      throw err;
+      await this.login();
+      return await this.submitClaim(input);
     } finally {
-      // Only auto-close in headless mode or on success
-      if (this.config.headless) {
+      // Don't close if pausing - let user see the result
+      if (!this.config.pauseBeforeSubmit) {
         await this.close();
       }
     }
   }
-
-  /** Manually close the browser (call after run() in non-headless mode) */
-  async cleanup(): Promise<void> {
-    await this.close();
-  }
-}
-
-export function createSubmitterFromEnv(): CignaSubmitter {
-  const cignaId = process.env.CIGNA_ID;
-  const password = process.env.CIGNA_PASSWORD;
-  const totpSecret = process.env.CIGNA_TOTP_SECRET;
-
-  if (!cignaId || !password) {
-    throw new Error("CIGNA_ID and CIGNA_PASSWORD must be set");
-  }
-
-  return new CignaSubmitter({
-    cignaId,
-    password,
-    ...(totpSecret && { totpSecret }),
-  });
 }
