@@ -58,6 +58,12 @@ export interface Illness {
   /** ICD code or Cigna diagnosis description (e.g., "ANXIETY DISORDER, UNSPECIFIED") */
   icdCode?: string;
 
+  /**
+   * Exact Cigna Envoy symptom option label (e.g., "TIRED OR WEAK").
+   * This must match the option text in the Cigna selector.
+   */
+  cignaSymptom?: string;
+
   /** Whether the condition is acute (temporary) or chronic (ongoing) */
   type: IllnessType;
 
@@ -69,6 +75,12 @@ export interface Illness {
 
   /** Additional notes about the condition */
   notes?: string;
+
+  /**
+   * Exact Cigna Envoy diagnosis option label (e.g., "MALAISE AND FATIGUE").
+   * This must match the option text in the Cigna selector.
+   */
+  cignaDescription?: string;
 
   /**
    * Email addresses/accounts relevant to this illness.

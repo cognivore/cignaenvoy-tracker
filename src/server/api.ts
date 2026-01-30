@@ -90,6 +90,7 @@ import {
 import { CignaScraper } from "../services/cigna-scraper.js";
 import { CignaSubmitter } from "../services/cigna-submit.js";
 import { extractAndPrepareAccounts } from "../services/account-extractor.js";
+import { generateDoctorNotesPdf } from "../services/pdf-generator.js";
 import type { CreatePatientInput, UpdatePatientInput } from "../types/patient.js";
 import type { CreateIllnessInput, UpdateIllnessInput } from "../types/illness.js";
 import type { DraftClaim, DraftClaimRange, DraftClaimDateSource } from "../types/draft-claim.js";
@@ -101,6 +102,60 @@ import type {
 } from "../types/archive-rule.js";
 
 const PORT = 3001;
+
+/**
+ * Map city/location names to proper country names for Cigna
+ */
+function resolveCountry(location: string | undefined): string {
+  if (!location) return "Unknown";
+
+  const locationLower = location.toLowerCase();
+
+  // Map common locations to countries
+  const locationToCountry: Record<string, string> = {
+    "london": "United Kingdom",
+    "uk": "United Kingdom",
+    "gb": "United Kingdom",
+    "england": "United Kingdom",
+    "scotland": "United Kingdom",
+    "wales": "United Kingdom",
+    "northern ireland": "United Kingdom",
+    "france": "France",
+    "fr": "France",
+    "paris": "France",
+    "croatia": "Croatia",
+    "hr": "Croatia",
+    "zagreb": "Croatia",
+    "germany": "Germany",
+    "de": "Germany",
+    "berlin": "Germany",
+    "munich": "Germany",
+    "usa": "United States",
+    "us": "United States",
+    "united states": "United States",
+    "new york": "United States",
+    "los angeles": "United States",
+  };
+
+  // Check for exact match first
+  if (locationToCountry[locationLower]) {
+    return locationToCountry[locationLower];
+  }
+
+  // Check if location contains a known key
+  for (const [key, country] of Object.entries(locationToCountry)) {
+    if (locationLower.includes(key)) {
+      return country;
+    }
+  }
+
+  // Return original if it looks like a full country name
+  if (location.length > 3 && !location.includes(" ")) {
+    return location;
+  }
+
+  return location;
+}
 
 type RouteHandler = (
   req: http.IncomingMessage,
@@ -710,6 +765,11 @@ routes.POST["/api/draft-claims/:id/accept"] = async (_req, _res, params, body) =
   const draft = await draftClaimsStorage.get(params.id!);
   requireEntity(draft, "Draft claim");
 
+  const draftCountry = draft.submission?.country?.trim();
+  if (!draftCountry) {
+    httpError(400, "country is required to accept a draft claim");
+  }
+
   const illness = await illnessesStorage.get(illnessId!);
   requireEntity(illness, "Illness");
 
@@ -809,20 +869,73 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
   const patient = await patientsStorage.get(illness.patientId);
   requireEntity(patient, "Patient");
 
+  // For Cigna submission, we upload:
+  // 1. Invoice/attachment documents from documentIds (the actual bills)
+  // 2. Payment proof documents (receipts, bank statements proving payment)
+  // We collect all unique document IDs and filter to those with actual file attachments.
   const allDocumentIds = dedupeIds([
     ...(draft.documentIds ?? []),
     ...(draft.paymentProofDocumentIds ?? []),
   ]);
   const allDocuments = await Promise.all(allDocumentIds.map((id) => documentsStorage.get(id)));
-  const attachments = allDocuments
+  const attachments: { filePath: string; fileName: string }[] = allDocuments
     .filter((doc): doc is MedicalDocument => !!doc)
     .filter((doc) => !!doc.attachmentPath)
-    .map((doc) => ({ filePath: doc.attachmentPath!, fileName: doc.filename }));
+    .map((doc) => ({
+      filePath: doc.attachmentPath!,
+      fileName: doc.filename ?? path.basename(doc.attachmentPath!),
+    }));
+
+  // Generate a PDF from doctor notes for the progress report.
+  // Cigna often requires a progress report, so we render the notes as a properly
+  // formatted PDF named YYYYMMDD_Doctor_Notes.pdf
+  if (draft.doctorNotes?.trim()) {
+    const treatmentDate = draft.treatmentDate
+      ? new Date(draft.treatmentDate)
+      : new Date();
+
+    const notesPdf = await generateDoctorNotesPdf({
+      doctorNotes: draft.doctorNotes,
+      treatmentDate,
+      patientName: patient.name,
+      illnessName: illness.name,
+      amount: draft.payment.amount,
+      currency: draft.payment.currency,
+    });
+
+    attachments.push({
+      filePath: notesPdf.filePath,
+      fileName: notesPdf.fileName,
+    });
+
+    console.log(`Generated doctor notes PDF: ${notesPdf.fileName}`);
+  }
 
   const submission = draft.submission ?? {};
-  const symptomNames =
-    submission.symptoms?.map((symptom) => symptom.name).filter(Boolean) ??
-    (illness.name ? [illness.name] : []);
+  const submissionCountry = submission.country?.trim();
+  if (!submissionCountry) {
+    httpError(400, "country is required to submit a draft claim");
+  }
+  const submittedSymptoms = submission.symptoms?.filter((symptom) => symptom.name?.trim()) ?? [];
+  const mappedSymptom = illness.cignaSymptom?.trim();
+  const mappedDiagnosis = illness.cignaDescription?.trim();
+  const hasMapping = !!mappedSymptom && !!mappedDiagnosis;
+  if (submittedSymptoms.length === 0 && !hasMapping) {
+    httpError(400, "Cigna symptom and diagnosis mapping are required for submission");
+  }
+  const resolvedSymptoms = hasMapping
+    ? [
+      {
+        name: mappedSymptom!,
+        description: mappedSymptom!,
+      },
+      {
+        name: mappedDiagnosis!,
+        description: mappedDiagnosis!,
+      },
+    ]
+    : submittedSymptoms;
+  const symptomNames = resolvedSymptoms.map((symptom) => symptom.name).filter(Boolean);
   const providerAccount =
     illness.relevantAccounts?.find((account) => account.role === "provider") ??
     illness.relevantAccounts?.[0];
@@ -835,16 +948,10 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
     proofDocumentIds: draft.paymentProofDocumentIds ?? [],
     treatmentIds: draft.documentIds ?? [],
     claimType: submission.claimType ?? "Medical",
-    symptoms:
-      submission.symptoms && submission.symptoms.length > 0
-        ? submission.symptoms
-        : illness.name
-          ? [{ name: illness.name, description: illness.icdCode ?? illness.name }]
-          : [],
+    symptoms: resolvedSymptoms,
     totalAmount: draft.payment.amount,
     currency: draft.payment.currency,
-    country:
-      submission.country ?? patient.workLocation ?? patient.citizenship ?? "Unknown",
+    country: resolveCountry(submissionCountry),
     notes: draft.doctorNotes,
   };
 
@@ -864,10 +971,10 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
         claimType: claim.claimType,
         country: claim.country,
         symptoms: symptomNames,
+        symptomMatchMode: "exact",
         providerName: submission.providerName ?? providerAccount?.name ?? providerAccount?.email,
         providerAddress: submission.providerAddress,
-        providerCountry:
-          submission.providerCountry ?? submission.country ?? patient.workLocation ?? patient.citizenship,
+        providerCountry: submission.providerCountry ?? submissionCountry,
         progressReport: submission.progressReport ?? draft.doctorNotes,
         treatmentDate: draft.treatmentDate
           ? new Date(draft.treatmentDate).toISOString().slice(0, 10)
@@ -878,21 +985,28 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
         documents: attachments,
       });
 
+      const now = new Date();
+      const isPaused = result.paused === true;
+      const status = isPaused ? "ready" : "submitted";
       await updateSubmittedClaim(claim.id, {
-        status: "submitted",
-        submittedAt: new Date(),
+        status,
+        submittedAt: isPaused ? undefined : now,
         cignaClaimId: result.cignaClaimId,
         submissionNumber: result.submissionNumber,
         submissionUrl: result.submissionUrl,
         claimUrl: result.claimUrl,
         submissionLog: [
           ...(claim.submissionLog ?? []),
-          `Submitted at ${new Date().toISOString()}`,
+          isPaused
+            ? `Paused before submit at ${now.toISOString()}`
+            : `Submitted at ${now.toISOString()}`,
         ],
       });
 
-      // Clean up browser after successful submission
-      await submitter.cleanup();
+      // Keep the browser open for manual review when paused.
+      if (!isPaused) {
+        await submitter.cleanup();
+      }
     } catch (err) {
       await updateSubmittedClaim(claim.id, {
         status: "draft",
@@ -947,9 +1061,35 @@ routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
   const draft = await draftClaimsStorage.get(params.id!);
   requireEntity(draft, "Draft claim");
 
-  // Only allow updates on pending drafts
+  const hasNonSubmissionUpdates =
+    illnessId !== undefined ||
+    doctorNotes !== undefined ||
+    calendarDocumentIds !== undefined ||
+    paymentProofDocumentIds !== undefined ||
+    paymentProofText !== undefined;
+
+  // Allow updating submission fields for non-pending drafts (needed for claim details)
   if (draft.status !== "pending") {
-    httpError(400, "Can only update pending draft claims");
+    if (hasNonSubmissionUpdates) {
+      httpError(400, "Can only update submission fields for non-pending draft claims");
+    }
+    if (submission === undefined) {
+      httpError(400, "submission is required to update non-pending draft claims");
+    }
+
+    const nextSubmission = {
+      ...(draft.submission ?? {}),
+      ...(submission ?? {}),
+    };
+
+    if (nextSubmission.country !== undefined) {
+      const trimmedCountry = nextSubmission.country?.trim();
+      nextSubmission.country = trimmedCountry || undefined;
+    }
+
+    const updated = await updateDraftClaim(params.id!, { submission: nextSubmission });
+    requireEntity(updated, "Draft claim");
+    return updated;
   }
 
   const updates: Partial<DraftClaim> = {};
@@ -998,6 +1138,11 @@ routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
       ...(draft.submission ?? {}),
       ...(submission ?? {}),
     };
+
+    if (nextSubmission.country !== undefined) {
+      const trimmedCountry = nextSubmission.country?.trim();
+      nextSubmission.country = trimmedCountry || undefined;
+    }
 
     if (doctorNotes !== undefined) {
       const trimmedNotes = doctorNotes.trim();
@@ -1469,7 +1614,32 @@ async function handleRequest(
   }
 }
 
+/**
+ * Validate that required Cigna credentials are available.
+ * Fail fast at startup rather than at request time.
+ */
+function validateRequiredSecrets(): void {
+  const cignaId = process.env.CIGNA_ID;
+  const password = process.env.CIGNA_PASSWORD;
+
+  const missing: string[] = [];
+  if (!cignaId) missing.push("CIGNA_ID");
+  if (!password) missing.push("CIGNA_PASSWORD");
+
+  if (missing.length > 0) {
+    console.error("❌ Missing required environment variables:", missing.join(", "));
+    console.error("   Set these via environment or use scripts/start-dev.sh which loads from passveil");
+    process.exit(1);
+  }
+
+  // TOTP is optional but warn if missing
+  if (!process.env.CIGNA_TOTP_SECRET) {
+    console.warn("⚠️  CIGNA_TOTP_SECRET not set - manual TOTP entry will be required for login");
+  }
+}
+
 export function startServer(port = PORT) {
+  validateRequiredSecrets();
   ensureStorageDirs();
 
   const server = http.createServer(handleRequest);

@@ -276,6 +276,8 @@ export interface Illness {
   patientId: string;
   name: string;
   icdCode?: string;
+  cignaSymptom?: string;
+  cignaDescription?: string;
   type: "acute" | "chronic";
   onsetDate?: string;
   resolvedDate?: string;
@@ -324,9 +326,15 @@ export interface CreateIllnessInput {
   patientId: string;
   name: string;
   icdCode?: string;
+  /** Exact Cigna Envoy symptom option label. */
+  cignaSymptom?: string;
   type: "acute" | "chronic";
   onsetDate?: string;
   notes?: string;
+  /**
+   * Exact Cigna Envoy diagnosis option label.
+   */
+  cignaDescription?: string;
 }
 
 export interface PreviewAccountsResponse {

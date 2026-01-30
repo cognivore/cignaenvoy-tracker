@@ -78,6 +78,23 @@ export default function Patients() {
     }
   }, [patients, selectedPatientId]); // Use ID, not object reference
 
+  async function handleUpdateIllness(
+    illnessId: string,
+    updates: Partial<CreateIllnessInput>
+  ) {
+    try {
+      const updated = await api.updateIllness(illnessId, updates);
+      setPatientIllnesses((prev) =>
+        prev.map((illness) => (illness.id === illnessId ? updated : illness))
+      );
+      setSelectedIllness(updated);
+      return updated;
+    } catch (err) {
+      console.error('Failed to update illness:', err);
+      throw err;
+    }
+  }
+
   async function loadPatientIllnesses(patientId: string) {
     setLoadingIllnesses(true);
     try {
@@ -408,6 +425,7 @@ export default function Patients() {
                 <IllnessDetail
                   illness={selectedIllness}
                   onClose={() => setSelectedIllness(null)}
+                  onUpdate={handleUpdateIllness}
                 />
               )}
             </div>
@@ -452,7 +470,15 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function IllnessDetail({ illness, onClose }: { illness: Illness; onClose: () => void }) {
+function IllnessDetail({
+  illness,
+  onClose,
+  onUpdate,
+}: {
+  illness: Illness;
+  onClose: () => void;
+  onUpdate: (id: string, updates: Partial<CreateIllnessInput>) => Promise<Illness>;
+}) {
   const roleColors: Record<string, string> = {
     provider: 'bg-bauhaus-blue/10 text-bauhaus-blue',
     pharmacy: 'bg-green-100 text-green-700',
@@ -460,6 +486,33 @@ function IllnessDetail({ illness, onClose }: { illness: Illness; onClose: () => 
     insurance: 'bg-bauhaus-yellow/20 text-bauhaus-black',
     other: 'bg-bauhaus-lightgray text-bauhaus-gray',
   };
+  const [cignaSymptom, setCignaSymptom] = useState(illness.cignaSymptom ?? '');
+  const [cignaDescription, setCignaDescription] = useState(illness.cignaDescription ?? '');
+  const [savingMapping, setSavingMapping] = useState(false);
+  const [mappingError, setMappingError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCignaSymptom(illness.cignaSymptom ?? '');
+    setCignaDescription(illness.cignaDescription ?? '');
+    setMappingError(null);
+  }, [illness.id, illness.cignaSymptom, illness.cignaDescription]);
+
+  async function handleSaveMapping() {
+    setSavingMapping(true);
+    setMappingError(null);
+    try {
+      const trimmedSymptom = cignaSymptom.trim();
+      const trimmedDescription = cignaDescription.trim();
+      await onUpdate(illness.id, {
+        cignaSymptom: trimmedSymptom || undefined,
+        cignaDescription: trimmedDescription || undefined,
+      });
+    } catch (err) {
+      setMappingError('Failed to save Cigna mapping.');
+    } finally {
+      setSavingMapping(false);
+    }
+  }
 
   return (
     <div className="bauhaus-card">
@@ -503,6 +556,53 @@ function IllnessDetail({ illness, onClose }: { illness: Illness; onClose: () => 
           <p className="mt-1 text-sm">{illness.notes}</p>
         </div>
       )}
+
+      <div className="border-t-2 border-bauhaus-black pt-4 mb-6">
+        <h4 className="font-bold mb-3 flex items-center gap-2">
+          <Heart size={16} />
+          Cigna Mapping
+        </h4>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-bauhaus-gray uppercase mb-1">
+              Cigna Symptom (exact option)
+            </label>
+            <input
+              type="text"
+              value={cignaSymptom}
+              onChange={(e) => setCignaSymptom(e.target.value)}
+              className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+              placeholder="e.g., TIRED OR WEAK"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-bauhaus-gray uppercase mb-1">
+              Cigna Diagnosis (exact option)
+            </label>
+            <input
+              type="text"
+              value={cignaDescription}
+              onChange={(e) => setCignaDescription(e.target.value)}
+              className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+              placeholder="e.g., MALAISE AND FATIGUE"
+            />
+          </div>
+          {mappingError && (
+            <p className="text-xs text-red-600">{mappingError}</p>
+          )}
+          <button
+            type="button"
+            onClick={handleSaveMapping}
+            disabled={savingMapping}
+            className={cn(
+              'px-3 py-2 text-sm font-medium bg-bauhaus-blue text-white hover:bg-bauhaus-blue/90 transition-colors',
+              savingMapping && 'opacity-60 cursor-not-allowed'
+            )}
+          >
+            {savingMapping ? 'Saving...' : 'Save Cigna Mapping'}
+          </button>
+        </div>
+      </div>
 
       {/* Relevant accounts */}
       <div className="border-t-2 border-bauhaus-black pt-4">
@@ -723,6 +823,8 @@ function IllnessFormModal({
     icdCode: '',
     onsetDate: '',
     notes: '',
+    cignaSymptom: '',
+    cignaDescription: '',
   });
 
   function handleSubmit(e: React.FormEvent) {
@@ -778,6 +880,34 @@ function IllnessFormModal({
               className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
               placeholder="e.g., F41.9, E11"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">Cigna Symptom</label>
+            <input
+              type="text"
+              value={formData.cignaSymptom || ''}
+              onChange={(e) => setFormData({ ...formData, cignaSymptom: e.target.value })}
+              className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+              placeholder="e.g., TIRED OR WEAK"
+            />
+            <p className="text-xs text-bauhaus-gray mt-1">
+              Must match the Cigna option text exactly.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">Cigna Diagnosis</label>
+            <input
+              type="text"
+              value={formData.cignaDescription || ''}
+              onChange={(e) => setFormData({ ...formData, cignaDescription: e.target.value })}
+              className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
+              placeholder="e.g., MALAISE AND FATIGUE"
+            />
+            <p className="text-xs text-bauhaus-gray mt-1">
+              Must match the Cigna option text exactly.
+            </p>
           </div>
 
           <div>

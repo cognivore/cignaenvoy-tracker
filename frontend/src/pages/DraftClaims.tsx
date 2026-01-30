@@ -243,8 +243,12 @@ export default function DraftClaims() {
       illness?.relevantAccounts?.[0];
     const symptomDefaults =
       submission.symptoms?.map((symptom) => symptom.name).filter(Boolean) ?? [];
+    const mappedSymptom = illness?.cignaSymptom?.trim();
+    const mappedDiagnosis = illness?.cignaDescription?.trim();
     const fallbackSymptoms =
-      symptomDefaults.length > 0 ? symptomDefaults : illness?.name ? [illness.name] : [];
+      symptomDefaults.length > 0
+        ? symptomDefaults
+        : [mappedSymptom, mappedDiagnosis].filter(Boolean);
 
     setSelectedIllnessId(draft.illnessId ?? '');
     setDoctorNotes(submission.progressReport ?? draft.doctorNotes ?? '');
@@ -252,9 +256,7 @@ export default function DraftClaims() {
     setSelectedProofIds(draft.paymentProofDocumentIds ?? []);
     setPaymentProofNote(draft.paymentProofText ?? '');
     setClaimType(submission.claimType ?? 'Medical');
-    setClaimCountry(
-      submission.country ?? patient?.workLocation ?? patient?.citizenship ?? ''
-    );
+    setClaimCountry(submission.country ?? '');
     setSymptomInputs([
       fallbackSymptoms[0] ?? '',
       fallbackSymptoms[1] ?? '',
@@ -264,10 +266,10 @@ export default function DraftClaims() {
     setProviderAddress(submission.providerAddress ?? '');
     setProviderCountry(
       submission.providerCountry ??
-        submission.country ??
-        patient?.workLocation ??
-        patient?.citizenship ??
-        ''
+      submission.country ??
+      patient?.workLocation ??
+      patient?.citizenship ??
+      ''
     );
 
     if (draft.treatmentDateSource === 'manual') {
@@ -304,7 +306,7 @@ export default function DraftClaims() {
       paymentProofText: paymentProofNote,
       submission: {
         claimType,
-        country: claimCountry,
+        country: claimCountry.trim(),
         symptoms,
         providerName,
         providerAddress,
@@ -315,9 +317,21 @@ export default function DraftClaims() {
     };
   }
 
+  function requireClaimCountry() {
+    const trimmed = claimCountry.trim();
+    if (!trimmed) {
+      alert('Country of treatment is required');
+      return null;
+    }
+    return trimmed;
+  }
+
   // Save draft changes
   async function handleSaveDraft() {
     if (!selectedDraft || selectedDraft.status !== 'pending') return;
+    if (!requireClaimCountry()) {
+      return;
+    }
 
     setSaving(true);
     try {
@@ -501,6 +515,9 @@ export default function DraftClaims() {
     const patient = patients.find((p) => p.id === illness.patientId);
     return patient?.name;
   }, [illnesses, patients]);
+  const draftCountry =
+    selectedDraft?.submission?.country?.trim() ??
+    (selectedDraft?.status === 'pending' ? claimCountry.trim() : '');
   const proofText =
     selectedDraft?.status === 'pending'
       ? paymentProofNote.trim()
@@ -508,9 +525,8 @@ export default function DraftClaims() {
   const proofProvided = activeProofIds.length > 0 || !!proofText;
   const proofSummary = proofProvided
     ? activeProofIds.length > 0
-      ? `${activeProofIds.length} document${activeProofIds.length === 1 ? '' : 's'}${
-          proofText ? ' + note' : ''
-        }`
+      ? `${activeProofIds.length} document${activeProofIds.length === 1 ? '' : 's'}${proofText ? ' + note' : ''
+      }`
       : 'Note provided'
     : 'Missing';
 
@@ -530,6 +546,9 @@ export default function DraftClaims() {
 
   async function handleAccept() {
     if (!selectedDraft) return;
+    if (!requireClaimCountry()) {
+      return;
+    }
     if (!selectedIllnessId) {
       alert('Select an illness before accepting');
       return;
@@ -639,6 +658,9 @@ export default function DraftClaims() {
 
   async function handleSubmitClaim() {
     if (!selectedDraft) return;
+    if (!requireClaimCountry()) {
+      return;
+    }
     setProcessing('submit');
     try {
       const claim = await api.submitDraftClaim(selectedDraft.id);
@@ -881,6 +903,9 @@ export default function DraftClaims() {
                   {selectedDraft.treatmentDate && (
                     <DetailRow label="Treatment Date" value={formatDate(selectedDraft.treatmentDate)} />
                   )}
+                  {draftCountry && (
+                    <DetailRow label="Country of Treatment" value={draftCountry} />
+                  )}
                   {selectedDocument?.filename && (
                     <DetailRow
                       label="Attachment"
@@ -954,14 +979,23 @@ export default function DraftClaims() {
                       </div>
 
                       <div className="mb-3">
-                        <label className="block text-sm text-bauhaus-gray mb-1">Country of Treatment</label>
+                        <label className="block text-sm text-bauhaus-gray mb-1">
+                          Country of Treatment *
+                        </label>
                         <input
                           type="text"
                           value={claimCountry}
                           onChange={(e) => setClaimCountry(e.target.value)}
                           className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
                           placeholder="Country where care was received"
+                          required
+                          aria-invalid={!claimCountry.trim()}
                         />
+                        {!claimCountry.trim() && (
+                          <p className="text-xs text-red-600 mt-1">
+                            Country of treatment is required.
+                          </p>
+                        )}
                       </div>
 
                       <div className="mb-3">
@@ -1285,6 +1319,10 @@ export default function DraftClaims() {
                       <>
                         <DetailRow label="Patient" value={draftPatient?.name ?? 'Unknown'} />
                         <DetailRow label="Illness" value={draftIllness?.name ?? selectedDraft.illnessId ?? 'Unknown'} />
+                        <DetailRow
+                          label="Country of Treatment"
+                          value={selectedDraft.submission?.country ?? 'Unknown'}
+                        />
                         {selectedDraft.doctorNotes && (
                           <DetailRow label="Doctor Notes" value={selectedDraft.doctorNotes} />
                         )}
@@ -1481,8 +1519,8 @@ function DraftCard({
             {draft.treatmentDate
               ? formatDate(draft.treatmentDate)
               : document?.date
-              ? formatDate(document.date)
-              : 'No date'}
+                ? formatDate(document.date)
+                : 'No date'}
           </span>
           <span className="font-bold">
             {formatCurrency(draft.payment.amount, draft.payment.currency)}

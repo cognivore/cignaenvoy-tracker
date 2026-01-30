@@ -22,11 +22,21 @@ fi
 
 # Fetch Cigna credentials from passveil
 echo "Fetching Cigna credentials from passveil..."
-CREDS=$(passveil show customer.cignaenvoy.com/tracker-credentials)
-export CIGNA_ID=$(echo "$CREDS" | head -1)
-export CIGNA_PASSWORD=$(echo "$CREDS" | tail -1)
+CREDS=$(passveil show customer.cignaenvoy.com/jons@geosurge.ai)
+# First line contains "Your Cigna Healthcare ID number is: XXXXXXXX" - extract just the number
+export CIGNA_ID=$(echo "$CREDS" | head -1 | grep -oE '[0-9]+$')
+# Password is on the last non-empty line
+export CIGNA_PASSWORD=$(echo "$CREDS" | grep -v '^$' | tail -1)
 export CIGNA_TOTP_SECRET=$(passveil show customer.cignaenvoy.com/totp-secret)
-echo "  ✓ Credentials loaded"
+
+# Fail fast if credentials weren't loaded
+if [ -z "$CIGNA_ID" ] || [ -z "$CIGNA_PASSWORD" ]; then
+  echo "  ❌ Failed to load Cigna credentials from passveil"
+  echo "     CIGNA_ID: ${CIGNA_ID:-<empty>}"
+  echo "     CIGNA_PASSWORD: ${CIGNA_PASSWORD:+<set>}${CIGNA_PASSWORD:-<empty>}"
+  exit 1
+fi
+echo "  ✓ Credentials loaded (ID: $CIGNA_ID)"
 
 # Start backend
 echo "Starting backend API server..."
