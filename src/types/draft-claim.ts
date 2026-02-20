@@ -5,18 +5,17 @@
 
 import type { ClaimType, Symptom } from "./claim.js";
 
-import type { ClaimType, Symptom } from "./claim.js";
-
 /**
  * Status of a draft claim in the workflow.
  */
-export type DraftClaimStatus = "pending" | "accepted" | "rejected";
+export type DraftClaimStatus = "pending" | "accepted" | "rejected" | "submitted";
 
 /** All draft claim statuses for iteration */
 export const DRAFT_CLAIM_STATUSES: readonly DraftClaimStatus[] = [
   "pending",
   "accepted",
   "rejected",
+  "submitted",
 ] as const;
 
 /**
@@ -110,32 +109,6 @@ export interface DraftClaimSubmission {
 }
 
 /**
- * Submission details required for creating a claim in Cigna Envoy.
- */
-export interface DraftClaimSubmission {
-  /** Claim type (Medical, Vision, Dental) */
-  claimType?: ClaimType;
-
-  /** Country where care was received */
-  country?: string;
-
-  /** Symptoms/diagnoses (up to 3) */
-  symptoms?: Symptom[];
-
-  /** Provider name */
-  providerName?: string;
-
-  /** Provider address */
-  providerAddress?: string;
-
-  /** Provider country */
-  providerCountry?: string;
-
-  /** Progress report (same as doctor notes) */
-  progressReport?: string;
-}
-
-/**
  * Draft claim generated from documents.
  */
 export interface DraftClaim {
@@ -163,9 +136,6 @@ export interface DraftClaim {
   /** Submission details captured before sending to Cigna */
   submission?: DraftClaimSubmission;
 
-  /** Submission details for Cigna Envoy */
-  submission?: DraftClaimSubmission;
-
   /** Illness associated with this draft (required for acceptance) */
   illnessId?: string;
 
@@ -180,6 +150,36 @@ export interface DraftClaim {
 
   /** Calendar documents used to extract dates */
   calendarDocumentIds?: string[];
+
+  // ========== CIGNA SUBMISSION LINK ==========
+  // These fields establish the definitive link between a DraftClaim and
+  // the corresponding ScrapedClaim after submission to Cigna Envoy.
+
+  /**
+   * Cigna submission number (e.g., "37603507").
+   * This is the PRIMARY key for matching - when present, it provides
+   * a guaranteed match to the corresponding ScrapedClaim.
+   */
+  submissionNumber?: string;
+
+  /**
+   * Reference to the linked ScrapedClaim.id after match confirmation.
+   * Set when match is accepted (either automatically or manually).
+   */
+  scrapedClaimId?: string;
+
+  /**
+   * Cigna claim number (e.g., "82143450").
+   * May not be available immediately (claims show "Claim number will be generated soon").
+   */
+  cignaClaimNumber?: string;
+
+  /**
+   * Timestamp when the link to scraped claim was established.
+   */
+  linkedAt?: Date;
+
+  // ========== TIMESTAMPS ==========
 
   /** Timestamp when draft was generated */
   generatedAt: Date;

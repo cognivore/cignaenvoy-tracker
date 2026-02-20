@@ -120,6 +120,21 @@ function initializeSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
     CREATE INDEX IF NOT EXISTS idx_claims_archived_at ON claims(archived_at);
 
+    -- Submitted claims (claims submitted via Cigna Envoy automation)
+    CREATE TABLE IF NOT EXISTS submitted_claims (
+      id TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      cigna_claim_id TEXT,
+      status TEXT,
+      archived_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_submitted_claims_cigna_claim_id ON submitted_claims(cigna_claim_id);
+    CREATE INDEX IF NOT EXISTS idx_submitted_claims_status ON submitted_claims(status);
+    CREATE INDEX IF NOT EXISTS idx_submitted_claims_archived_at ON submitted_claims(archived_at);
+
     -- Draft claims
     CREATE TABLE IF NOT EXISTS draft_claims (
       id TEXT PRIMARY KEY,
@@ -468,4 +483,38 @@ export function findAttachmentProcessingByPathSqlite(attachmentPath: string): Pr
 
   if (!row) return Promise.resolve(null);
   return Promise.resolve(JSON.parse(row.data, dateReviver));
+}
+
+/**
+ * Efficient query for active/archived documents using the indexed archived_at column.
+ * Avoids loading and parsing all 3k+ documents when only a fraction are needed.
+ */
+export function queryDocumentsByArchiveStatus<T>(
+  tableName: string,
+  archived: boolean
+): T[] {
+  const database = getDatabase();
+  const sql = archived
+    ? `SELECT data FROM ${tableName} WHERE archived_at IS NOT NULL`
+    : `SELECT data FROM ${tableName} WHERE archived_at IS NULL`;
+  const rows = database.prepare(sql).all() as { data: string }[];
+  return rows.map((row) => JSON.parse(row.data, dateReviver) as T);
+}
+
+/**
+ * Find active (non-archived, non-calendar) documents by email_id.
+ * Uses indexed email_id column for fast lookup.
+ */
+export function queryActiveDocumentsByEmailId<T>(
+  tableName: string,
+  emailId: string
+): T[] {
+  const database = getDatabase();
+  const rows = database
+    .prepare(
+      `SELECT data FROM ${tableName}
+       WHERE email_id = ? AND archived_at IS NULL AND source_type != 'calendar'`
+    )
+    .all(emailId) as { data: string }[];
+  return rows.map((row) => JSON.parse(row.data, dateReviver) as T);
 }

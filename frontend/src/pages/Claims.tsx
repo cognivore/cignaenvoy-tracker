@@ -5,6 +5,7 @@ import { DetailRow, EmptyState, LoadingSpinner, UnseenDivider, FilterTabs } from
 import { api, type Claim, type ScrapedClaim, type Patient } from '@/lib/api';
 import { useUnseenList } from '@/lib/useUnseenList';
 import { useUnseenDivider } from '@/lib/useUnseenDivider';
+import { useCachedFetch } from '@/lib/useCachedFetch';
 
 type ClaimFilter = 'all' | 'scraped' | 'submitted';
 
@@ -73,14 +74,13 @@ export default function Claims() {
   } = useUnseenList<UnifiedClaim>({
     fetcher: async () => {
       const [scraped, submitted] = await Promise.all([
-        api.getScrapedClaims(),
-        api.getClaims(),
+        api.getActiveScrapedClaims(),
+        api.getActiveClaims(),
       ]);
       const unified: UnifiedClaim[] = [
-        ...scraped.filter((sc) => !sc.archivedAt).map(unifyScrapedClaim),
-        ...submitted.filter((c) => !c.archivedAt).map(unifySubmittedClaim),
+        ...scraped.map(unifyScrapedClaim),
+        ...submitted.map(unifySubmittedClaim),
       ];
-      // Sort by most recent submission date
       unified.sort((a, b) => {
         const dateA = a.submittedAt ? new Date(a.submittedAt).getTime() : 0;
         const dateB = b.submittedAt ? new Date(b.submittedAt).getTime() : 0;
@@ -93,7 +93,11 @@ export default function Claims() {
 
   const [selectedClaim, setSelectedClaim] = useState<UnifiedClaim | null>(null);
   const [archiving, setArchiving] = useState(false);
-  const [patients, setPatients] = useState<Patient[]>([]);
+  const { data: patients } = useCachedFetch<Patient[]>({
+    key: 'patients-active',
+    fetcher: api.getActivePatients,
+    pollIntervalMs: 300_000,
+  });
   const dividerRef = useRef<HTMLDivElement | null>(null);
 
   async function handleArchive() {
@@ -123,17 +127,6 @@ export default function Claims() {
     }
   }, [claims, selectedClaim]);
 
-  useEffect(() => {
-    const loadPatients = async () => {
-      try {
-        const data = await api.getPatients();
-        setPatients(data);
-      } catch (err) {
-        console.error('Failed to load patients:', err);
-      }
-    };
-    loadPatients();
-  }, []);
 
   const statusColors: Record<string, string> = {
     draft: 'bg-bauhaus-gray text-white',
@@ -187,7 +180,7 @@ export default function Claims() {
 
   const renderClaimCard = (claim: UnifiedClaim) => {
     const patientName = claim.patientId
-      ? patients.find((patient) => patient.id === claim.patientId)?.name ?? 'Unknown'
+      ? (patients ?? []).find((patient) => patient.id === claim.patientId)?.name ?? 'Unknown'
       : claim.memberName ?? 'Unknown';
     const dateLabel = claim.submittedAt ? formatDate(claim.submittedAt) : 'No date';
     return (
@@ -339,7 +332,7 @@ export default function Claims() {
                   label="Patient"
                   value={
                     selectedClaim.patientId
-                      ? patients.find((patient) => patient.id === selectedClaim.patientId)?.name ?? selectedClaim.patientId
+                      ? (patients ?? []).find((patient) => patient.id === selectedClaim.patientId)?.name ?? selectedClaim.patientId
                       : selectedClaim.memberName ?? 'Unknown'
                   }
                 />

@@ -77,6 +77,11 @@ function isWithinDateWindow(
   return diff <= windowDays * 24 * 60 * 60 * 1000;
 }
 
+/**
+ * Resolve payment proof documents for a draft claim.
+ * Only considers documents from the SAME email thread as the primary document.
+ * If the primary document has no emailId, returns empty (no cross-thread matching).
+ */
 export function resolvePaymentProofDocuments(params: {
   documents: MedicalDocument[];
   primaryDocument: MedicalDocument;
@@ -87,19 +92,25 @@ export function resolvePaymentProofDocuments(params: {
   const limit = maxDocuments ?? DEFAULT_MAX_RESULTS;
   if (limit <= 0) return [];
 
+  // Only match documents from the same email thread
+  const primaryEmailId = primaryDocument.emailId;
+  if (!primaryEmailId) {
+    // No email thread context - cannot auto-match proofs
+    return [];
+  }
+
   const referenceDate = getDocumentDate(primaryDocument);
 
   const scored = documents
     .filter((document) => document.id !== primaryDocument.id)
+    // Must be from the same email thread
+    .filter((document) => document.emailId === primaryEmailId)
     .filter(isProofCandidate)
     .map((document) => {
       const text = buildProofText(document);
       const hasKeywords = hasProofKeywords(text);
       const isReceipt = PAYMENT_PROOF_CLASSES.has(document.classification);
       const amountMatch = matchesPaymentAmount(document, payment);
-      const sameEmail =
-        !!primaryDocument.emailId &&
-        document.emailId === primaryDocument.emailId;
       const inWindow = isWithinDateWindow(
         referenceDate,
         getDocumentDate(document),
@@ -110,7 +121,6 @@ export function resolvePaymentProofDocuments(params: {
         (amountMatch ? 4 : 0) +
         (isReceipt ? 2 : 0) +
         (hasKeywords ? 2 : 0) +
-        (sameEmail ? 1 : 0) +
         (inWindow ? 1 : 0);
 
       return { document, score, amountMatch };

@@ -88,7 +88,24 @@ export interface SubmissionResult {
   paused?: boolean;
 }
 
+type SubmissionPageContext = {
+  html: string;
+  text: string;
+  url: string;
+  links: string[];
+};
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function formatLocalTimestamp(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${year}${month}${day}-${hours}-${minutes}-${seconds}`;
+}
 
 function generateTOTP(secret: string): string {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -122,13 +139,13 @@ function generateTOTP(secret: string): string {
 export class CignaSubmitter {
   private driver: WebDriver | null = null;
   private config: SubmitterConfig;
-  private keepBrowserOpen = false;
+  private runDir: string | null = null;
 
   constructor(config: SubmitterConfig) {
     this.config = {
       ...config,
       headless: config.headless ?? false,
-      pauseBeforeSubmit: config.pauseBeforeSubmit ?? true,
+      pauseBeforeSubmit: config.pauseBeforeSubmit ?? false,
       pauseTimeoutMs: config.pauseTimeoutMs ?? 15 * 60 * 1000,
     };
   }
@@ -136,6 +153,11 @@ export class CignaSubmitter {
   async init(): Promise<void> {
     await ensureStorageDirs();
     fs.mkdirSync(DEBUG_DIR, { recursive: true });
+
+    const runDirName = `${formatLocalTimestamp(new Date())}-run`;
+    this.runDir = path.join("data", runDirName);
+    fs.mkdirSync(this.runDir, { recursive: true });
+    console.log(`✓ Run HTML logs: ${this.runDir}`);
 
     const options = new chrome.Options();
     if (this.config.headless) {
@@ -197,6 +219,107 @@ export class CignaSubmitter {
     } catch {
       return null;
     }
+  }
+
+  private getRunDir(): string {
+    if (!this.runDir) {
+      throw new Error("Run directory not initialized");
+    }
+    return this.runDir;
+  }
+
+  private async capturePageHtml(): Promise<string> {
+    if (!this.driver) throw new Error("Driver not initialized");
+    const html = await this.driver.executeScript(
+      "return document.documentElement.outerHTML;"
+    ) as string;
+    return html;
+  }
+
+  private async recordStepHtml(
+    prefix: string,
+    stepName: string,
+    htmlOverride?: string
+  ): Promise<void> {
+    const html = htmlOverride ?? await this.capturePageHtml();
+    const filename = `${prefix}-${stepName}.html`;
+    const filepath = path.join(this.getRunDir(), filename);
+    fs.writeFileSync(filepath, html, "utf-8");
+    console.log(`  ✓ Saved HTML snapshot: ${filename}`);
+  }
+
+  private async capturePageContext(): Promise<SubmissionPageContext> {
+    if (!this.driver) throw new Error("Driver not initialized");
+    const context = await this.driver.executeScript(
+      `
+        const html = document.documentElement.outerHTML;
+        const text = document.body?.textContent || '';
+        const links = Array.from(document.querySelectorAll('a'))
+          .map((a) => a.href)
+          .filter(Boolean);
+        return {
+          html,
+          text,
+          url: window.location.href,
+          links,
+        };
+      `
+    ) as SubmissionPageContext;
+    return context;
+  }
+
+  private extractSubmissionIds(context: SubmissionPageContext): SubmissionResult {
+    const text = context.text ?? "";
+    const claimMatch =
+      text.match(/(?:claim\s*(?:number|no\.?|#))\s*[:#]?\s*([A-Za-z0-9-]+)/i);
+    const submissionMatch =
+      text.match(/(?:submission\s*(?:number|no\.?|#))\s*[:#]?\s*([A-Za-z0-9-]+)/i);
+
+    const cignaClaimId = claimMatch?.[1]?.trim();
+    const submissionNumber = submissionMatch?.[1]?.trim();
+    const claimUrl = context.links.find((href) => href.toLowerCase().includes("claim"));
+
+    const result: SubmissionResult = {
+      submissionUrl: context.url,
+    };
+    if (cignaClaimId) result.cignaClaimId = cignaClaimId;
+    if (submissionNumber) result.submissionNumber = submissionNumber;
+    if (claimUrl) result.claimUrl = claimUrl;
+
+    return result;
+  }
+
+  private async clickSubmitButton(): Promise<void> {
+    if (!this.driver) throw new Error("Driver not initialized");
+    const clicked = await this.driver.executeScript(
+      `
+        const normalize = (value) =>
+          (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+        const target = buttons.find((btn) => normalize(btn.textContent).includes('submit'));
+        if (!target) return false;
+        target.scrollIntoView({ block: 'center' });
+        target.click();
+        return true;
+      `
+    ) as boolean;
+
+    if (!clicked) {
+      throw new Error("Submit button not found");
+    }
+  }
+
+  private async waitForSubmissionConfirmation(): Promise<void> {
+    if (!this.driver) throw new Error("Driver not initialized");
+    await this.driver.wait(
+      async () => {
+        const text = await this.driver!.executeScript(
+          "return document.body?.textContent || '';"
+        ) as string;
+        return /submission\\s*number|claim\\s*number/i.test(text);
+      },
+      CIGNA_TIMING.pageLoad * 2
+    );
   }
 
   /**
@@ -1690,7 +1813,7 @@ export class CignaSubmitter {
    * - Name in UPPERCASE
    * - Date of birth in "DD MMM YYYY" format
    */
-  private async selectPatient(patientName = "EMILS PETRACENOKS"): Promise<void> {
+  private async selectPatient(patientName: string): Promise<void> {
     if (!this.driver) throw new Error("Driver not initialized");
     console.log(`  Step 1: Selecting patient "${patientName}"...`);
 
@@ -2176,67 +2299,49 @@ export class CignaSubmitter {
   }
 
   /**
-   * Final review and submit (or pause before submit)
+   * Wait for the review page to load (progress ~100%)
+   */
+  private async waitForReviewPage(): Promise<void> {
+    if (!this.driver) throw new Error("Driver not initialized");
+    console.log("  Waiting for review page (progress >= 95%)...");
+    const start = Date.now();
+    while (Date.now() - start < CIGNA_TIMING.pageLoad * 2) {
+      const progress = await this.getProgress();
+      console.log(`    Current progress: ${progress}%`);
+      if (progress >= 95) {
+        console.log(`  ✓ Review page loaded (progress: ${progress}%)`);
+        return;
+      }
+      await sleep(CIGNA_TIMING.pollInterval);
+    }
+    throw new Error("Review page did not load within timeout (stuck at upload step)");
+  }
+
+  /**
+   * Final review - STOPS here for human to complete submission manually
    */
   private async reviewAndSubmit(): Promise<SubmissionResult> {
     if (!this.driver) throw new Error("Driver not initialized");
-    const driver = this.driver;
-    console.log("  Final review...");
-    const result: SubmissionResult = {
-      submissionUrl: await driver.getCurrentUrl(),
-    };
+    console.log("  Final review - browser will stay open for manual submission");
+    await this.waitForReviewPage();
+    await this.recordStepHtml("010", "review");
 
-    const extractSubmission = async () => {
-      try {
-        const pageText = await driver.executeScript(`return document.body.textContent;`) as string;
+    // DO NOT auto-submit - let human click Submit and finish
+    console.log("");
+    console.log("  ╔════════════════════════════════════════════════════════════╗");
+    console.log("  ║  READY FOR MANUAL SUBMISSION                               ║");
+    console.log("  ║                                                            ║");
+    console.log("  ║  Review the claim details, then click Submit.              ║");
+    console.log("  ║  The browser will close automatically in 15 minutes,       ║");
+    console.log("  ║  or you can close it manually after submission.            ║");
+    console.log("  ║                                                            ║");
+    console.log("  ║  Cigna will assign a Submission ID - our background        ║");
+    console.log("  ║  scraper will pick it up and match it to this draft.       ║");
+    console.log("  ╚════════════════════════════════════════════════════════════╝");
+    console.log("");
 
-        const claimMatch = pageText.match(/[Cc]laim\s*[Nn]umber[:\s]*(\d+)/);
-        const claimId = claimMatch?.[1];
-        if (claimId) result.cignaClaimId = claimId;
-
-        const subMatch = pageText.match(/[Ss]ubmission\s*[Nn]umber[:\s]*(\d+)/);
-        const submissionNumber = subMatch?.[1];
-        if (submissionNumber) result.submissionNumber = submissionNumber;
-      } catch { }
-    };
-
-    if (this.config.pauseBeforeSubmit) {
-      this.keepBrowserOpen = true;
-      console.log("\n  ⏸️  PAUSED BEFORE SUBMIT");
-      console.log("  Review the form in the browser.");
-      console.log("  The submit button will be highlighted.");
-
-      // Highlight submit button
-      await this.driver.executeScript(`
-        const btns = document.querySelectorAll('button');
-        for (const btn of btns) {
-          const text = (btn.textContent || '').toLowerCase();
-          if (text.includes('submit')) {
-            btn.style.border = '5px solid red';
-            btn.style.backgroundColor = 'yellow';
-          }
-        }
-      `);
-
-      const pauseUntil = Date.now() + (this.config.pauseTimeoutMs ?? 15 * 60 * 1000);
-      while (Date.now() < pauseUntil) {
-        await sleep(5000);
-        await extractSubmission();
-        if (result.cignaClaimId || result.submissionNumber) {
-          break;
-        }
-      }
-    } else {
-      await extractSubmission();
-    }
-
-    const hasSubmission = Boolean(result.cignaClaimId || result.submissionNumber);
-    if (this.config.pauseBeforeSubmit && !hasSubmission) {
-      result.paused = true;
-      console.log("  ⏸️  Submission paused; waiting for manual submit.");
-    }
-
-    return result;
+    // Return empty result - IDs will be captured by scraper later
+    return {};
   }
 
   /**
@@ -2246,17 +2351,25 @@ export class CignaSubmitter {
     if (!this.driver) throw new Error("Driver not initialized");
 
     await this.navigateToNewClaim();
+    await this.recordStepHtml("002", "navigate");
     await this.selectPatient(input.patientName);
+    await this.recordStepHtml("003", "patient");
     await this.selectCountry(input.country);
+    await this.recordStepHtml("004", "country");
     await this.selectClaimType(input.claimType);
+    await this.recordStepHtml("005", "claim_type");
     await this.fillClaimDetails(input);
+    await this.recordStepHtml("006", "details");
     await this.enterSymptoms(input.symptoms);
+    await this.recordStepHtml("007", "symptoms");
     await this.handleOtherInsurer();
+    await this.recordStepHtml("008", "other_insurer");
 
     // Document upload step
     if (input.documents.length > 0) {
       await this.uploadDocuments(input.documents);
     }
+    await this.recordStepHtml("009", "upload");
 
     // Click Continue to go to review page
     await this.clickContinueButton("upload");
@@ -2272,13 +2385,10 @@ export class CignaSubmitter {
     try {
       await this.init();
       await this.login();
+      await this.recordStepHtml("001", "login");
       return await this.submitClaim(input);
     } finally {
-      // Keep the browser open only if we actually reached the pause step.
-      const shouldKeepOpen = this.config.pauseBeforeSubmit && this.keepBrowserOpen;
-      if (!shouldKeepOpen) {
-        await this.close();
-      }
+      await this.close();
     }
   }
 }

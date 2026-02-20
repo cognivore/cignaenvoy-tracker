@@ -34,8 +34,33 @@ function dateReviver(_key: string, value: unknown): unknown {
 /**
  * Extract indexed field value from entity.
  */
-function getFieldValue(entity: Record<string, unknown>, field: string): string | null {
-  const value = entity[field];
+/**
+ * Property name to column name mapping for migration.
+ * Entity JSON uses camelCase; DB columns use snake_case.
+ */
+const FIELD_ALIASES: Record<string, string> = {
+  cignaClaimId: "cigna_claim_id",
+  cignaClaimNumber: "cigna_claim_id",
+  archivedAt: "archived_at",
+  documentId: "document_id",
+  claimId: "claim_id",
+  patientId: "patient_id",
+};
+
+function getFieldValue(entity: Record<string, unknown>, columnName: string): string | null {
+  let value = entity[columnName];
+  if (value === undefined || value === null) {
+    const props = Object.entries(FIELD_ALIASES)
+      .filter(([, col]) => col === columnName)
+      .map(([prop]) => prop);
+    for (const prop of props) {
+      const v = entity[prop];
+      if (v !== undefined && v !== null) {
+        value = v;
+        break;
+      }
+    }
+  }
   if (value === undefined || value === null) return null;
   if (value instanceof Date) return value.toISOString();
   return String(value);
@@ -179,6 +204,16 @@ async function migrate(): Promise<void> {
   console.log("\nMigrating claims...");
   allStats.push(
     migrateDirectory(STORAGE_DIRS.claims, "claims", [
+      "cigna_claim_id",
+      "status",
+      "archived_at",
+    ])
+  );
+
+  // Submitted claims
+  console.log("\nMigrating submitted_claims...");
+  allStats.push(
+    migrateDirectory(STORAGE_DIRS.submittedClaims, "submitted_claims", [
       "cigna_claim_id",
       "status",
       "archived_at",

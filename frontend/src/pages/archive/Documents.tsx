@@ -23,10 +23,7 @@ export default function ArchivedDocuments() {
     refresh,
     removeItem,
   } = useUnseenList<MedicalDocument>({
-    fetcher: async () => {
-      const all = await api.getDocuments();
-      return all.filter((doc) => !!doc.archivedAt);
-    },
+    fetcher: api.getArchivedDocuments,
     cacheKey: 'archived-documents',
     sortFn: (a, b) => new Date(b.archivedAt!).getTime() - new Date(a.archivedAt!).getTime(),
   });

@@ -87,7 +87,7 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
 /**
  * Extract amounts from text.
  */
-function extractAmounts(text: string): DetectedAmount[] {
+export function extractAmounts(text: string): DetectedAmount[] {
   const amounts: DetectedAmount[] = [];
   const seen = new Set<string>();
 
@@ -147,7 +147,7 @@ function extractAmounts(text: string): DetectedAmount[] {
 /**
  * Classify document based on content.
  */
-function classifyDocument(
+export function classifyDocument(
   text: string,
   subject?: string,
   isCalendarEvent: boolean = false
@@ -286,7 +286,7 @@ function isMedicalRelated(text: string, subject?: string): boolean {
 /**
  * Extract medical keywords found in text.
  */
-function extractMedicalKeywords(text: string): string[] {
+export function extractMedicalKeywords(text: string): string[] {
   const combined = text.toLowerCase();
   return MEDICAL_KEYWORDS.filter((keyword) =>
     combined.includes(keyword.toLowerCase())

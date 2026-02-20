@@ -13,14 +13,23 @@ import {
   type StorageOperations,
 } from "./base.js";
 import { getStorageBackend } from "./repository.js";
+import { createRequire } from "node:module";
 import type {
   AttachmentProcessingRecord,
   CreateAttachmentProcessingRecordInput,
   UpdateAttachmentProcessingRecordInput,
 } from "../types/attachment-processing.js";
 
-// Lazy-load SQLite
+const esmRequire = createRequire(import.meta.url);
+
 let sqliteModule: typeof import("./sqlite.js") | null = null;
+
+function getSqliteModuleSync(): typeof import("./sqlite.js") {
+  if (!sqliteModule) {
+    sqliteModule = esmRequire("./sqlite.js") as typeof import("./sqlite.js");
+  }
+  return sqliteModule;
+}
 
 async function getSqliteModule() {
   if (!sqliteModule) {
@@ -30,10 +39,8 @@ async function getSqliteModule() {
 }
 
 function getAttachmentProcessingStorage(): StorageOperations<AttachmentProcessingRecord> {
-  const backend = getStorageBackend();
-  if (backend === "sqlite") {
-    const sqlite = require("./sqlite.js") as typeof import("./sqlite.js");
-    return sqlite.createSqliteRepository<AttachmentProcessingRecord>(
+  if (getStorageBackend() === "sqlite") {
+    return getSqliteModuleSync().createSqliteRepository<AttachmentProcessingRecord>(
       "attachment_processing",
       [
         { column: "attachment_path", property: "attachmentPath" },

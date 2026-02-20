@@ -1,7 +1,8 @@
 /**
  * Archive Rules Storage
  *
- * JSON file storage for auto-archive rules.
+ * Backend-aware storage for auto-archive rules.
+ * Uses SQLite when STORAGE_BACKEND=sqlite, otherwise JSON files.
  */
 
 import type {
@@ -14,15 +15,28 @@ import {
   STORAGE_DIRS,
   generateId,
   dateReviver,
+  type StorageOperations,
 } from "./base.js";
+import { getStorageBackend } from "./repository.js";
+import { createRequire } from "node:module";
+
+const esmRequire = createRequire(import.meta.url);
+
+function getArchiveRulesStorage(): StorageOperations<ArchiveRule> {
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = esmRequire("./sqlite.js") as typeof import("./sqlite.js");
+    return sqlite.createSqliteRepository<ArchiveRule>("archive_rules", [
+      { column: "name", property: "name" },
+      { column: "enabled", property: "enabled" },
+    ]) as StorageOperations<ArchiveRule>;
+  }
+  return createStorage<ArchiveRule>(STORAGE_DIRS.archiveRules, dateReviver);
+}
 
 /**
  * Storage operations for archive rules.
  */
-export const archiveRulesStorage = createStorage<ArchiveRule>(
-  STORAGE_DIRS.archiveRules,
-  dateReviver
-);
+export const archiveRulesStorage = getArchiveRulesStorage();
 
 /**
  * Create a new archive rule.

@@ -14,10 +14,10 @@ export interface Patient {
   /** Internal UUID for local tracking */
   id: string;
 
-  /** External Cigna Healthcare ID number (e.g., "88017286701") */
+  /** External Cigna Healthcare ID number (e.g., "12345678901") */
   cignaId: string;
 
-  /** Full name as shown in Cigna system (e.g., "EMILS PETRACENOKS") */
+  /** Full name as shown in Cigna system (e.g., "JOHN SMITH") */
   name: string;
 
   /** Relationship to account: Employee (primary), Member, or Beneficiary */

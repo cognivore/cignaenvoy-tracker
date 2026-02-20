@@ -15,6 +15,7 @@ import {
 } from '@/lib/api';
 import { useUnseenList } from '@/lib/useUnseenList';
 import { useUnseenDivider } from '@/lib/useUnseenDivider';
+import { useCachedFetch } from '@/lib/useCachedFetch';
 
 interface EnrichedAssignment extends DocumentClaimAssignment {
   document?: MedicalDocument;
@@ -34,15 +35,38 @@ export default function Matches() {
     cacheKey: 'matches',
   });
 
-  const [claims, setClaims] = useState<ScrapedClaim[]>([]);
-  const [documents, setDocuments] = useState<MedicalDocument[]>([]);
-  const [patients, setPatients] = useState<Patient[]>([]);
+  const { data: claimsCached } = useCachedFetch<ScrapedClaim[]>({
+    key: 'scraped-claims-active',
+    fetcher: api.getActiveScrapedClaims,
+    pollIntervalMs: 120_000,
+  });
+  const claims = claimsCached ?? [];
+
+  const { data: documentsCached } = useCachedFetch<MedicalDocument[]>({
+    key: 'documents-active',
+    fetcher: api.getActiveDocuments,
+    pollIntervalMs: 120_000,
+  });
+  const documents = documentsCached ?? [];
+
+  const { data: patientsCached } = useCachedFetch<Patient[]>({
+    key: 'patients-active',
+    fetcher: api.getActivePatients,
+    pollIntervalMs: 300_000,
+  });
+  const patients = patientsCached ?? [];
+
+  const { data: activeDraftsCached } = useCachedFetch<import('@/lib/api').DraftClaim[]>({
+    key: 'draft-claims-ref',
+    fetcher: api.getActiveDraftClaims,
+    pollIntervalMs: 120_000,
+  });
+
   const [illnesses, setIllnesses] = useState<Illness[]>([]);
   const [filter, setFilter] = useState<'candidate' | 'confirmed' | 'rejected' | 'all'>('candidate');
   const [selectedMatch, setSelectedMatch] = useState<EnrichedAssignment | null>(null);
   const [reviewNotes, setReviewNotes] = useState('');
   const [draftScope, setDraftScope] = useState<'all' | 'drafts'>('all');
-  const [acceptedDraftDocumentIds, setAcceptedDraftDocumentIds] = useState<string[]>([]);
   const dividerRef = useRef<HTMLDivElement | null>(null);
 
   // Illness selection state
@@ -60,35 +84,14 @@ export default function Matches() {
   // Matching state
   const [runningMatching, setRunningMatching] = useState(false);
 
-  const loadReferenceData = useCallback(async () => {
-    try {
-      const [claimsList, docsList, patientsList, draftClaims] = await Promise.all([
-        api.getScrapedClaims(),
-        api.getDocuments(),
-        api.getPatients(),
-        api.getDraftClaims(),
-      ]);
-
-      setClaims(claimsList);
-      setDocuments(docsList);
-      setPatients(patientsList);
-
-      const acceptedDraftDocs = new Set(
-        draftClaims
-          .filter((draft) => draft.status === 'accepted')
-          .flatMap((draft) => draft.documentIds)
-      );
-      setAcceptedDraftDocumentIds(Array.from(acceptedDraftDocs));
-    } catch (err) {
-      console.error('Failed to load match references:', err);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadReferenceData();
-    const interval = setInterval(loadReferenceData, 60000);
-    return () => clearInterval(interval);
-  }, [loadReferenceData]);
+  const acceptedDraftDocumentIds = useMemo(() => {
+    if (!activeDraftsCached) return [];
+    return Array.from(new Set(
+      activeDraftsCached
+        .filter((draft) => draft.status === 'accepted')
+        .flatMap((draft) => draft.documentIds)
+    ));
+  }, [activeDraftsCached]);
 
   // Load account preview when a match is selected
   const loadAccountPreview = useCallback(async (assignmentId: string) => {
@@ -285,7 +288,7 @@ export default function Matches() {
       const result = await api.runMatching();
       console.log(`Created ${result.created} match candidates`);
       // Reload assignments to show new matches
-      await Promise.all([refreshAssignments(), loadReferenceData()]);
+      await refreshAssignments();
     } catch (err) {
       console.error('Failed to run matching:', err);
       alert(`Error running matching: ${err}`);
@@ -296,8 +299,7 @@ export default function Matches() {
 
   const handleRefresh = useCallback(() => {
     refreshAssignments();
-    loadReferenceData();
-  }, [refreshAssignments, loadReferenceData]);
+  }, [refreshAssignments]);
 
   return (
     <div className="p-8">

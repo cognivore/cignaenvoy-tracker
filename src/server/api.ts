@@ -28,10 +28,13 @@ import {
 import {
   documentsStorage,
   getMedicalBills,
+  getActiveDocuments,
+  getArchivedDocuments,
   setPaymentOverride,
   archiveDocument,
   unarchiveDocument,
   createMedicalDocument,
+  updateMedicalDocument,
 } from "../storage/documents.js";
 import {
   assignmentsStorage,
@@ -79,8 +82,17 @@ import {
 import { ensureStorageDirs, getStorageBackend, getStatsFast } from "../storage/index.js";
 import { DocumentProcessor } from "../services/document-processor.js";
 import { generateDraftClaims } from "../services/draft-claim-generator.js";
-import { promoteDocumentToDraftClaim } from "../services/draft-claim-promoter.js";
+import { promoteDocumentToDraftClaim, propagateDocumentPaymentToDrafts } from "../services/draft-claim-promoter.js";
 import { Matcher } from "../services/matcher.js";
+import {
+  matchAllScrapedClaimsToDrafts,
+  getMatchCandidatesForReview,
+  confirmMatch,
+  autoLinkBySubmissionNumber,
+  autoLinkHighConfidenceMatches,
+  linkDraftToSubmissionNumber,
+  getLinkedDraftClaims,
+} from "../services/draft-claim-matcher.js";
 import { applyArchiveRuleToExistingDocuments } from "../services/archive-rules.js";
 import { dedupeIds } from "../services/ids.js";
 import {
@@ -93,7 +105,7 @@ import { extractAndPrepareAccounts } from "../services/account-extractor.js";
 import { generateDoctorNotesPdf } from "../services/pdf-generator.js";
 import type { CreatePatientInput, UpdatePatientInput } from "../types/patient.js";
 import type { CreateIllnessInput, UpdateIllnessInput } from "../types/illness.js";
-import type { DraftClaim, DraftClaimRange, DraftClaimDateSource } from "../types/draft-claim.js";
+import type { DraftClaim, DraftClaimRange, DraftClaimDateSource, DraftClaimStatus } from "../types/draft-claim.js";
 import type { Claim } from "../types/claim.js";
 import type { MedicalDocument } from "../types/medical-document.js";
 import type {
@@ -307,6 +319,13 @@ routes.GET["/api/claims/archived"] = async () => getArchivedSubmittedClaims();
 
 routes.GET["/api/claims/active"] = async () => getActiveSubmittedClaims();
 
+routes.GET["/api/claims/by-draft/:draftId"] = async (_req, _res, params) => {
+  const all = await submittedClaimsStorage.getAll();
+  const claim = all.find((c: any) => c.draftClaimId === params.draftId);
+  if (!claim) httpError(404, "No claim found for this draft");
+  return claim;
+};
+
 /** Archive or unarchive a claim */
 routes.PUT["/api/claims/:id/archive"] = async (_req, _res, params, body) => {
   const { archived } = body as { archived?: boolean };
@@ -371,7 +390,38 @@ routes.PUT["/api/scraped-claims/:id/archive"] = async (_req, _res, params, body)
 // DOCUMENTS ROUTES
 // =============================================
 
-routes.GET["/api/documents"] = async () => documentsStorage.getAll();
+/** Strip heavy text fields from documents for list responses. */
+function slimDocument(doc: MedicalDocument) {
+  const { ocrText, ...rest } = doc;
+  return rest;
+}
+
+/**
+ * Time-based response cache for expensive list endpoints.
+ * Avoids re-serializing the same 3k+ document list on every poll.
+ */
+const responseCache = new Map<string, { data: unknown; expires: number }>();
+function cachedHandler<T>(key: string, ttlMs: number, handler: () => Promise<T>): () => Promise<T> {
+  return async () => {
+    const now = Date.now();
+    const entry = responseCache.get(key);
+    if (entry && entry.expires > now) return entry.data as T;
+    const data = await handler();
+    responseCache.set(key, { data, expires: now + ttlMs });
+    return data;
+  };
+}
+
+function invalidateCache(prefix: string) {
+  for (const key of responseCache.keys()) {
+    if (key.startsWith(prefix)) responseCache.delete(key);
+  }
+}
+
+routes.GET["/api/documents"] = async () => {
+  const all = await documentsStorage.getAll();
+  return all.map(slimDocument);
+};
 
 routes.GET["/api/documents/:id"] = async (_req, _res, params) => {
   const doc = await documentsStorage.get(params.id!);
@@ -379,7 +429,20 @@ routes.GET["/api/documents/:id"] = async (_req, _res, params) => {
   return doc;
 };
 
-routes.GET["/api/documents/medical-bills"] = async () => getMedicalBills();
+routes.GET["/api/documents/active"] = cachedHandler("docs:active", 10_000, async () => {
+  const docs = await getActiveDocuments();
+  return docs.map(slimDocument);
+});
+
+routes.GET["/api/documents/archived"] = cachedHandler("docs:archived", 10_000, async () => {
+  const docs = await getArchivedDocuments();
+  return docs.map(slimDocument);
+});
+
+routes.GET["/api/documents/medical-bills"] = async () => {
+  const bills = await getMedicalBills();
+  return bills.map(slimDocument);
+};
 
 /** Set or clear a manual payment override for a document */
 routes.PUT["/api/documents/:id/payment-override"] = async (_req, _res, params, body) => {
@@ -397,6 +460,7 @@ routes.PUT["/api/documents/:id/payment-override"] = async (_req, _res, params, b
   if (clear) {
     const updated = await setPaymentOverride(params.id!, null);
     requireEntity(updated, "Document");
+    await propagateDocumentPaymentToDrafts(params.id!);
     return updated;
   }
 
@@ -417,6 +481,7 @@ routes.PUT["/api/documents/:id/payment-override"] = async (_req, _res, params, b
 
   const updated = await setPaymentOverride(params.id!, overrideInput);
   requireEntity(updated, "Document");
+  await propagateDocumentPaymentToDrafts(params.id!);
   return updated;
 };
 
@@ -438,16 +503,18 @@ routes.PUT["/api/documents/:id/archive"] = async (_req, _res, params, body) => {
   if (archived) {
     const updated = await archiveDocument(params.id!, { reason, ruleId });
     requireEntity(updated, "Document");
+    invalidateCache("docs:");
     return updated;
   }
 
   const updated = await unarchiveDocument(params.id!);
   requireEntity(updated, "Document");
+  invalidateCache("docs:");
   return updated;
 };
 
 /** Promote a document (and its email group) into a draft claim */
-routes.POST["/api/documents/:id/promote"] = async (_req, _res, params) => {
+routes.POST["/api/documents/:id/promote"] = async (_req, _res, params, body) => {
   const document = await documentsStorage.get(params.id!);
   requireEntity(document, "Document");
 
@@ -455,8 +522,73 @@ routes.POST["/api/documents/:id/promote"] = async (_req, _res, params) => {
     httpError(400, "Cannot promote an archived document");
   }
 
-  const documents = await documentsStorage.getAll();
-  return promoteDocumentToDraftClaim(document, documents);
+  const { force } = (body ?? {}) as { force?: boolean };
+  return promoteDocumentToDraftClaim(document, { force: !!force });
+};
+
+/** Reprocess a document to re-extract amounts and metadata */
+routes.POST["/api/documents/:id/reprocess"] = async (_req, _res, params) => {
+  const document = await documentsStorage.get(params.id!);
+  requireEntity(document, "Document");
+
+  if (!document.attachmentPath) {
+    httpError(400, "Document has no attachment to process");
+  }
+
+  console.log(`Reprocessing document ${document.id}: ${document.filename}`);
+
+  // Import QweN client and helpers
+  const { qwenClient } = await import("../services/qwen-client.js");
+  const { extractAmounts, classifyDocument, extractMedicalKeywords } = await import("../services/document-processor.js");
+
+  // Re-run OCR on the attachment
+  console.log(`  Running OCR on: ${document.attachmentPath}`);
+  const ocrResult = await qwenClient.ocrDocument(document.attachmentPath);
+
+  if (ocrResult.status !== "success" || !ocrResult.text) {
+    console.error(`  OCR failed:`, ocrResult.error);
+    httpError(500, `OCR failed: ${ocrResult.error ?? "Unknown error"}`);
+  }
+
+  const ocrText = ocrResult.text;
+  console.log(`  OCR extracted ${ocrText.length} characters`);
+
+  // Extract amounts from OCR text
+  const detectedAmounts = extractAmounts(ocrText);
+  console.log(`  Detected ${detectedAmounts.length} amounts:`, detectedAmounts.map(a => `${a.value} ${a.currency}`));
+
+  // Pick the best amount (highest confidence or largest)
+  const bestAmount = detectedAmounts.sort((a, b) => {
+    if (a.confidence !== b.confidence) return b.confidence - a.confidence;
+    return b.value - a.value;
+  })[0];
+
+  // Update the document
+  const updates: Parameters<typeof updateMedicalDocument>[1] = {
+    ocrText,
+    ocrCharCount: ocrText.length,
+    detectedAmounts,
+    classification: classifyDocument(ocrText, document.subject ?? ""),
+    medicalKeywords: extractMedicalKeywords(ocrText),
+  };
+
+  if (bestAmount) {
+    updates.extractedAmount = bestAmount.value;
+    updates.extractedCurrency = bestAmount.currency;
+    console.log(`  Best amount: ${bestAmount.value} ${bestAmount.currency}`);
+  } else {
+    console.log(`  No amounts detected in document`);
+  }
+
+  const updated = await updateMedicalDocument(document.id, updates);
+  console.log(`  Document updated successfully`);
+
+  const propagated = await propagateDocumentPaymentToDrafts(document.id);
+  if (propagated.length > 0) {
+    console.log(`  Propagated payment to ${propagated.length} draft claim(s)`);
+  }
+
+  return updated;
 };
 
 // =============================================
@@ -846,7 +978,7 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
   const password = bodyPw ?? process.env.CIGNA_PASSWORD;
   const totpSecret = bodyTotp ?? process.env.CIGNA_TOTP_SECRET;
   const headless = bodyHeadless ?? false; // Default: visible browser
-  const pauseBeforeSubmit = bodyPause ?? true; // Default: pause for user to click submit
+  const pauseBeforeSubmit = bodyPause ?? false; // Default: submit automatically
 
   if (!cignaId || !password) {
     httpError(400, "cignaId and password required (via body or CIGNA_ID/CIGNA_PASSWORD env vars)");
@@ -869,22 +1001,29 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
   const patient = await patientsStorage.get(illness.patientId);
   requireEntity(patient, "Patient");
 
-  // For Cigna submission, we upload:
-  // 1. Invoice/attachment documents from documentIds (the actual bills)
-  // 2. Payment proof documents (receipts, bank statements proving payment)
-  // We collect all unique document IDs and filter to those with actual file attachments.
-  const allDocumentIds = dedupeIds([
+  // For Cigna submission, upload ALL attachments and ALL proofs.
+  // This includes invoices/bills from documentIds and payment proofs.
+  const allDocIds = dedupeIds([
     ...(draft.documentIds ?? []),
     ...(draft.paymentProofDocumentIds ?? []),
   ]);
-  const allDocuments = await Promise.all(allDocumentIds.map((id) => documentsStorage.get(id)));
-  const attachments: { filePath: string; fileName: string }[] = allDocuments
+  console.log(`Submission: collecting documents from ${allDocIds.length} IDs:`, allDocIds);
+  const allDocs = await Promise.all(allDocIds.map((id) => documentsStorage.get(id)));
+  const attachments: { filePath: string; fileName: string }[] = allDocs
     .filter((doc): doc is MedicalDocument => !!doc)
-    .filter((doc) => !!doc.attachmentPath)
+    .filter((doc) => {
+      if (!doc.attachmentPath) {
+        console.log(`  Skipping ${doc.id} (${doc.filename ?? doc.subject ?? 'no name'}): no attachmentPath`);
+        return false;
+      }
+      console.log(`  Including ${doc.id}: ${doc.filename} -> ${doc.attachmentPath}`);
+      return true;
+    })
     .map((doc) => ({
       filePath: doc.attachmentPath!,
       fileName: doc.filename ?? path.basename(doc.attachmentPath!),
     }));
+  console.log(`Submission: ${attachments.length} attachments to upload:`, attachments.map(a => a.fileName));
 
   // Generate a PDF from doctor notes for the progress report.
   // Cigna often requires a progress report, so we render the notes as a properly
@@ -955,21 +1094,22 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
     notes: draft.doctorNotes,
   };
 
-  const claim = await createSubmittedClaim(claimInput, "processing");
+  // Don't create a claim record yet - it will be created when matched with scraped claim
+  // Just run the submitter to fill the form and stop at the review page
 
   void (async () => {
     const submitter = new CignaSubmitter({
       cignaId,
       password,
       ...(totpSecret && { totpSecret }),
-      headless,
-      pauseBeforeSubmit,
+      headless: false, // Always visible for manual submission
+      pauseBeforeSubmit: true, // Will pause at review page
     });
 
     try {
-      const result = await submitter.run({
-        claimType: claim.claimType,
-        country: claim.country,
+      await submitter.run({
+        claimType: claimInput.claimType,
+        country: claimInput.country,
         symptoms: symptomNames,
         symptomMatchMode: "exact",
         providerName: submission.providerName ?? providerAccount?.name ?? providerAccount?.email,
@@ -979,50 +1119,34 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
         treatmentDate: draft.treatmentDate
           ? new Date(draft.treatmentDate).toISOString().slice(0, 10)
           : undefined,
-        totalAmount: claim.totalAmount,
-        currency: claim.currency,
+        totalAmount: claimInput.totalAmount,
+        currency: claimInput.currency,
         patientName: patient.name,
         documents: attachments,
       });
 
-      const now = new Date();
-      const isPaused = result.paused === true;
-      const status = isPaused ? "ready" : "submitted";
-      await updateSubmittedClaim(claim.id, {
-        status,
-        submittedAt: isPaused ? undefined : now,
-        cignaClaimId: result.cignaClaimId,
-        submissionNumber: result.submissionNumber,
-        submissionUrl: result.submissionUrl,
-        claimUrl: result.claimUrl,
-        submissionLog: [
-          ...(claim.submissionLog ?? []),
-          isPaused
-            ? `Paused before submit at ${now.toISOString()}`
-            : `Submitted at ${now.toISOString()}`,
-        ],
-      });
-
-      // Keep the browser open for manual review when paused.
-      if (!isPaused) {
+      // Browser stays open for manual submission - don't cleanup immediately
+      // Wait 15 minutes for human to complete, then cleanup
+      console.log("Browser ready for manual submission. Will auto-close in 15 minutes.");
+      setTimeout(async () => {
+        console.log("Auto-closing submission browser...");
         await submitter.cleanup();
-      }
+      }, 15 * 60 * 1000);
+
     } catch (err) {
-      await updateSubmittedClaim(claim.id, {
-        status: "draft",
-        submissionErrors: [
-          ...(claim.submissionErrors ?? []),
-          String(err),
-        ],
-        submissionLog: [
-          ...(claim.submissionLog ?? []),
-          `Submission failed at ${new Date().toISOString()}`,
-        ],
-      });
+      console.error("Submission preparation failed:", err);
+      await submitter.cleanup();
     }
   })();
 
-  return claim;
+  // Return the draft claim info - status stays "accepted" until matched with scraped claim
+  return {
+    message: "Browser opened for manual submission. Complete the submission on Cigna, then our scraper will match it.",
+    draftId: draft.id,
+    patient: patient.name,
+    amount: claimInput.totalAmount,
+    currency: claimInput.currency,
+  };
 };
 
 routes.POST["/api/draft-claims/:id/reject"] = async (_req, _res, params) => {
@@ -1045,6 +1169,7 @@ routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
   const {
     illnessId,
     doctorNotes,
+    documentIds: inputDocumentIds,
     calendarDocumentIds,
     paymentProofDocumentIds,
     paymentProofText,
@@ -1052,6 +1177,7 @@ routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
   } = body as {
     illnessId?: string;
     doctorNotes?: string;
+    documentIds?: string[];
     calendarDocumentIds?: string[];
     paymentProofDocumentIds?: string[];
     paymentProofText?: string;
@@ -1061,36 +1187,13 @@ routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
   const draft = await draftClaimsStorage.get(params.id!);
   requireEntity(draft, "Draft claim");
 
-  const hasNonSubmissionUpdates =
-    illnessId !== undefined ||
-    doctorNotes !== undefined ||
-    calendarDocumentIds !== undefined ||
-    paymentProofDocumentIds !== undefined ||
-    paymentProofText !== undefined;
-
-  // Allow updating submission fields for non-pending drafts (needed for claim details)
-  if (draft.status !== "pending") {
-    if (hasNonSubmissionUpdates) {
-      httpError(400, "Can only update submission fields for non-pending draft claims");
-    }
-    if (submission === undefined) {
-      httpError(400, "submission is required to update non-pending draft claims");
-    }
-
-    const nextSubmission = {
-      ...(draft.submission ?? {}),
-      ...(submission ?? {}),
-    };
-
-    if (nextSubmission.country !== undefined) {
-      const trimmedCountry = nextSubmission.country?.trim();
-      nextSubmission.country = trimmedCountry || undefined;
-    }
-
-    const updated = await updateDraftClaim(params.id!, { submission: nextSubmission });
-    requireEntity(updated, "Draft claim");
-    return updated;
+  // Rejected drafts are read-only
+  if (draft.status === "rejected") {
+    httpError(400, "Cannot update rejected draft claims");
   }
+
+  // Both pending and accepted drafts can be edited
+  // (only truly locked when promoted to an actual Claim)
 
   const updates: Partial<DraftClaim> = {};
 
@@ -1119,6 +1222,55 @@ routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
         ? paymentProofDocumentIds.filter(Boolean)
         : []
       : undefined;
+  const requestedDocIds =
+    inputDocumentIds !== undefined
+      ? Array.isArray(inputDocumentIds)
+        ? inputDocumentIds.filter(Boolean)
+        : []
+      : undefined;
+
+  // Validate documentIds if provided
+  if (requestedDocIds !== undefined) {
+    // 1. Primary document must always be included
+    if (!requestedDocIds.includes(draft.primaryDocumentId)) {
+      httpError(400, "documentIds must include the primary document");
+    }
+
+    // 2. All referenced docs must exist and not be archived
+    const allDocs = await documentsStorage.getAll();
+    const docsById = new Map(allDocs.map((doc) => [doc.id, doc]));
+    const primaryDoc = docsById.get(draft.primaryDocumentId);
+    const primaryEmailId = primaryDoc?.emailId;
+
+    for (const docId of requestedDocIds) {
+      const doc = docsById.get(docId);
+      if (!doc) {
+        httpError(400, `Document not found: ${docId}`);
+      }
+      if (doc.archivedAt) {
+        httpError(400, `Cannot attach archived document: ${docId}`);
+      }
+      // 3. Non-manual uploads must share emailId with primary document
+      if (doc.sourceType !== "manual_upload" && doc.sourceType !== "calendar") {
+        if (primaryEmailId && doc.emailId !== primaryEmailId) {
+          httpError(400, `Document ${docId} is not from the same email thread as the primary document`);
+        }
+      }
+    }
+
+    // 4. Auto-include calendarDocumentIds and paymentProofDocumentIds in documentIds
+    const finalCalendarIds = calendarIds ?? draft.calendarDocumentIds ?? [];
+    const finalProofIds = proofIds ?? draft.paymentProofDocumentIds ?? [];
+
+    // Automatically add proof and calendar docs to documentIds (don't error)
+    for (const id of [...finalCalendarIds, ...finalProofIds]) {
+      if (!requestedDocIds.includes(id)) {
+        requestedDocIds.push(id);
+      }
+    }
+
+    updates.documentIds = dedupeIds(requestedDocIds);
+  }
 
   if (calendarIds !== undefined) {
     updates.calendarDocumentIds = calendarIds;
@@ -1157,7 +1309,8 @@ routes.PATCH["/api/draft-claims/:id"] = async (_req, _res, params, body) => {
     }
   }
 
-  if (calendarIds !== undefined || proofIds !== undefined) {
+  // If documentIds was NOT explicitly provided, auto-update based on calendar/proof changes
+  if (requestedDocIds === undefined && (calendarIds !== undefined || proofIds !== undefined)) {
     let nextDocumentIds = draft.documentIds;
 
     if (calendarIds !== undefined) {
@@ -1237,6 +1390,88 @@ routes.POST["/api/process/match"] = async () => {
   return { created: assignments.length, assignments };
 };
 
+/** Match scraped claims to draft claims */
+routes.POST["/api/process/match-drafts"] = async () => {
+  const matches = await matchAllScrapedClaimsToDrafts();
+  return { found: matches.length, matches };
+};
+
+/** Get draft-to-scraped match candidates for review */
+routes.GET["/api/draft-claim-matches"] = async () => {
+  const candidates = await getMatchCandidatesForReview();
+  return candidates.map((c) => ({
+    ...c,
+    documents: c.documents.map(slimDocument),
+  }));
+};
+
+/** Auto-link drafts to scraped claims (submission number + high-confidence heuristic) */
+routes.POST["/api/draft-claim-matches/auto-link"] = async () => {
+  // First, link by exact submission number (guaranteed)
+  const linkedBySubmission = await autoLinkBySubmissionNumber();
+  // Then, link high-confidence heuristic matches (amount + currency + patient + date)
+  const linkedByHeuristic = await autoLinkHighConfidenceMatches();
+  const totalLinked = linkedBySubmission + linkedByHeuristic;
+  console.log(`Auto-linked: ${linkedBySubmission} by submission, ${linkedByHeuristic} by heuristic`);
+  return { linked: totalLinked, linkedBySubmission, linkedByHeuristic };
+};
+
+/** Get all linked (submitted) draft claims with their scraped claim details */
+routes.GET["/api/draft-claim-matches/linked"] = async () => {
+  const results = await getLinkedDraftClaims();
+  return results;
+};
+
+/** Accept a draft-to-scraped match - links draft to scraped claim */
+routes.POST["/api/draft-claim-matches/:draftId/accept"] = async (_req, _res, params, body) => {
+  const { scrapedClaimId } = body as { scrapedClaimId: string };
+
+  if (!scrapedClaimId) {
+    httpError(400, "scrapedClaimId is required");
+  }
+
+  const draft = await draftClaimsStorage.get(params.draftId!);
+  requireEntity(draft, "Draft claim");
+
+  const scrapedClaim = await scrapedClaimsStorage.get(scrapedClaimId);
+  requireEntity(scrapedClaim, "Scraped claim");
+
+  // Allow matching from both "accepted" and "submitted" (if re-linking)
+  if (draft.status !== "accepted" && draft.status !== "submitted") {
+    httpError(400, "Only accepted or submitted draft claims can be matched");
+  }
+
+  // Use confirmMatch to properly link draft to scraped claim
+  // This stores submissionNumber, scrapedClaimId, cignaClaimNumber on the draft
+  const updated = await confirmMatch(draft.id, scrapedClaimId);
+  requireEntity(updated, "Updated draft claim");
+
+  console.log(
+    `Linked draft ${draft.id} → scraped claim ${scrapedClaim.submissionNumber} (${scrapedClaim.id})`
+  );
+
+  return {
+    draft: updated,
+    scrapedClaim,
+    submissionNumber: scrapedClaim.submissionNumber,
+    cignaClaimNumber: scrapedClaim.cignaClaimNumber,
+  };
+};
+
+/** Store submission number on a draft claim (called after Cigna submission) */
+routes.POST["/api/draft-claims/:id/link-submission"] = async (_req, _res, params, body) => {
+  const { submissionNumber } = body as { submissionNumber: string };
+
+  if (!submissionNumber) {
+    httpError(400, "submissionNumber is required");
+  }
+
+  const updated = await linkDraftToSubmissionNumber(params.id!, submissionNumber);
+  requireEntity(updated, "Draft claim");
+
+  return updated;
+};
+
 routes.POST["/api/process/calendar"] = async () => {
   const processor = new DocumentProcessor({ processCalendar: true });
   const docs = await processor.processCalendarEventsFromSearch();
@@ -1271,7 +1506,18 @@ routes.POST["/api/process/scrape"] = async (_req, _res, _params, body) => {
 
   const claims = await scraper.run();
   console.log(`Scraped ${claims.length} claims from Cigna`);
-  return { scraped: claims.length, claims };
+
+  // AUTO-LINK: After scraping, automatically link any draft claims
+  // 1. First by exact submission number (guaranteed)
+  const linkedBySubmission = await autoLinkBySubmissionNumber();
+  // 2. Then by high-confidence heuristic (amount + currency + patient + date)
+  const linkedByHeuristic = await autoLinkHighConfidenceMatches();
+  const totalLinked = linkedBySubmission + linkedByHeuristic;
+  if (totalLinked > 0) {
+    console.log(`Auto-linked ${totalLinked} draft claims (${linkedBySubmission} by submission, ${linkedByHeuristic} by heuristic)`);
+  }
+
+  return { scraped: claims.length, claims, autoLinked: totalLinked };
 };
 
 // =============================================
@@ -1424,12 +1670,13 @@ async function parseMultipartFormData(
 }
 
 /**
- * Handle proof file upload.
- * Creates a MedicalDocument record for the uploaded file.
+ * Generic file upload handler.
+ * Creates a MedicalDocument record with the specified classification.
  */
-async function handleProofUpload(
+async function handleFileUpload(
   req: http.IncomingMessage,
-  res: http.ServerResponse
+  res: http.ServerResponse,
+  classification: "receipt" | "medical_bill"
 ): Promise<boolean> {
   const parsed = await parseMultipartFormData(req);
   if (!parsed) {
@@ -1467,7 +1714,7 @@ async function handleProofUpload(
     attachmentPath: filePath,
     mimeType,
     fileSize: buffer.length,
-    classification: "receipt",
+    classification,
     date: new Date(),
     detectedAmounts: [],
   });
@@ -1480,6 +1727,26 @@ async function handleProofUpload(
   });
 
   return true;
+}
+
+/**
+ * Handle proof file upload (receipt classification).
+ */
+async function handleProofUpload(
+  req: http.IncomingMessage,
+  res: http.ServerResponse
+): Promise<boolean> {
+  return handleFileUpload(req, res, "receipt");
+}
+
+/**
+ * Handle attachment file upload (medical_bill classification).
+ */
+async function handleAttachmentUpload(
+  req: http.IncomingMessage,
+  res: http.ServerResponse
+): Promise<boolean> {
+  return handleFileUpload(req, res, "medical_bill");
 }
 
 /**
@@ -1531,6 +1798,8 @@ function matchRoute(
   const methodRoutes = routes[method as keyof typeof routes];
   if (!methodRoutes) return null;
 
+  let parameterizedMatch: { handler: RouteHandler; params: Record<string, string> } | null = null;
+
   for (const [pattern, handler] of Object.entries(methodRoutes)) {
     const patternParts = pattern.split("/");
     const pathParts = pathname.split("/");
@@ -1539,20 +1808,27 @@ function matchRoute(
 
     const params: Record<string, string> = {};
     let match = true;
+    let hasParams = false;
 
     for (let i = 0; i < patternParts.length; i++) {
       if (patternParts[i]!.startsWith(":")) {
         params[patternParts[i]!.slice(1)] = pathParts[i]!;
+        hasParams = true;
       } else if (patternParts[i] !== pathParts[i]) {
         match = false;
         break;
       }
     }
 
-    if (match) return { handler: handler as RouteHandler, params };
+    if (match) {
+      if (!hasParams) return { handler: handler as RouteHandler, params };
+      if (!parameterizedMatch) {
+        parameterizedMatch = { handler: handler as RouteHandler, params };
+      }
+    }
   }
 
-  return null;
+  return parameterizedMatch;
 }
 
 async function handleRequest(
@@ -1587,9 +1863,13 @@ async function handleRequest(
       return;
     }
 
-    // Special handling for proof file upload (multipart/form-data)
+    // Special handling for file uploads (multipart/form-data)
     if (pathname === "/api/proof-upload" && method === "POST") {
       await handleProofUpload(req, res);
+      return;
+    }
+    if (pathname === "/api/attachment-upload" && method === "POST") {
+      await handleAttachmentUpload(req, res);
       return;
     }
 

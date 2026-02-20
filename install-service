@@ -155,15 +155,8 @@ EOF
 }
 
 generate_caddy_plist() {
-    # Find caddy binary from nix store (use any project that has it)
-    local caddy_bin
-    caddy_bin=$(nix develop "$PROJECT_DIR" --command which caddy 2>/dev/null || true)
-
-    if [[ -z "$caddy_bin" ]]; then
-        error "Could not find caddy. Make sure it's in flake.nix"
-        exit 1
-    fi
-
+    # Use nix develop wrapper instead of hardcoded store path
+    # This ensures Caddy works even after garbage collection or flake updates
     cat > "$PLIST_CADDY" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -174,7 +167,11 @@ generate_caddy_plist() {
 
     <key>ProgramArguments</key>
     <array>
-        <string>${caddy_bin}</string>
+        <string>/nix/var/nix/profiles/default/bin/nix</string>
+        <string>develop</string>
+        <string>${PROJECT_DIR}</string>
+        <string>--command</string>
+        <string>caddy</string>
         <string>run</string>
         <string>--config</string>
         <string>${CADDY_MAIN_CONFIG}</string>
@@ -187,6 +184,8 @@ generate_caddy_plist() {
     <dict>
         <key>HOME</key>
         <string>${HOME}</string>
+        <key>PATH</key>
+        <string>/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -198,10 +197,12 @@ generate_caddy_plist() {
         <false/>
         <key>Crashed</key>
         <true/>
+        <key>NetworkState</key>
+        <true/>
     </dict>
 
     <key>ThrottleInterval</key>
-    <integer>5</integer>
+    <integer>10</integer>
 
     <key>StandardOutPath</key>
     <string>${CADDY_LOGS_DIR}/caddy.stdout.log</string>
@@ -222,6 +223,18 @@ EOF
 generate_backend_plist() {
     mkdir -p "$LOG_DIR"
 
+    # Get PASSVEIL_CIGNA_PATH from environment or prompt
+    local passveil_path="${PASSVEIL_CIGNA_PATH:-}"
+    if [[ -z "$passveil_path" ]]; then
+        warn "PASSVEIL_CIGNA_PATH not set in environment."
+        echo -n "  Enter passveil credentials path (e.g., customer.cignaenvoy.com/user@example.com): "
+        read -r passveil_path
+        if [[ -z "$passveil_path" ]]; then
+            error "PASSVEIL_CIGNA_PATH is required for backend to authenticate"
+            exit 1
+        fi
+    fi
+
     cat > "$PLIST_BACKEND" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -236,9 +249,8 @@ generate_backend_plist() {
         <string>develop</string>
         <string>${PROJECT_DIR}</string>
         <string>--command</string>
-        <string>npx</string>
-        <string>tsx</string>
-        <string>src/server/api.ts</string>
+        <string>bash</string>
+        <string>${PROJECT_DIR}/scripts/launchd-backend.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -249,9 +261,11 @@ generate_backend_plist() {
         <key>HOME</key>
         <string>${HOME}</string>
         <key>PATH</key>
-        <string>/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>${HOME}/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>PORT</key>
         <string>${BACKEND_PORT}</string>
+        <key>PASSVEIL_CIGNA_PATH</key>
+        <string>${passveil_path}</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -263,10 +277,12 @@ generate_backend_plist() {
         <false/>
         <key>Crashed</key>
         <true/>
+        <key>NetworkState</key>
+        <true/>
     </dict>
 
     <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <integer>15</integer>
 
     <key>StandardOutPath</key>
     <string>${LOG_DIR}/backend.stdout.log</string>
@@ -324,10 +340,12 @@ generate_frontend_plist() {
         <false/>
         <key>Crashed</key>
         <true/>
+        <key>NetworkState</key>
+        <true/>
     </dict>
 
     <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <integer>15</integer>
 
     <key>StandardOutPath</key>
     <string>${LOG_DIR}/frontend.stdout.log</string>
@@ -543,7 +561,8 @@ do_logs() {
 do_restart() {
     info "Restarting Cigna Envoy Tracker services..."
 
-    for plist in "$PLIST_BACKEND" "$PLIST_FRONTEND"; do
+    # Unload all services
+    for plist in "$PLIST_BACKEND" "$PLIST_FRONTEND" "$PLIST_CADDY"; do
         if [[ -f "$plist" ]]; then
             launchctl unload "$plist" 2>/dev/null || true
         fi
@@ -551,11 +570,20 @@ do_restart() {
 
     sleep 1
 
-    for plist in "$PLIST_BACKEND" "$PLIST_FRONTEND"; do
+    # Regenerate plists to ensure fresh nix paths
+    setup_caddy_dirs
+    generate_backend_plist
+    generate_frontend_plist
+    generate_site_caddyfile
+    generate_main_caddyfile
+    generate_caddy_plist
+
+    # Load all services
+    for plist in "$PLIST_CADDY" "$PLIST_BACKEND" "$PLIST_FRONTEND"; do
         if [[ -f "$plist" ]]; then
             launchctl load "$plist"
         else
-            error "Service not installed. Run: $0 install"
+            error "Failed to generate plist. Run: $0 install"
             exit 1
         fi
     done

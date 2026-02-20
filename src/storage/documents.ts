@@ -19,9 +19,18 @@ import {
 } from "./base.js";
 import { getStorageBackend } from "./repository.js";
 import { hasPaymentSignal } from "../services/payment-signal.js";
+import { createRequire } from "node:module";
 
-// Lazy-load SQLite to avoid import errors when not using it
+const esmRequire = createRequire(import.meta.url);
+
 let sqliteModule: typeof import("./sqlite.js") | null = null;
+
+function getSqliteModuleSync(): typeof import("./sqlite.js") {
+  if (!sqliteModule) {
+    sqliteModule = esmRequire("./sqlite.js") as typeof import("./sqlite.js");
+  }
+  return sqliteModule;
+}
 
 async function getSqliteModule() {
   if (!sqliteModule) {
@@ -30,26 +39,25 @@ async function getSqliteModule() {
   return sqliteModule;
 }
 
-/**
- * Get the appropriate storage backend.
- */
+const DOCUMENTS_INDEX_FIELDS = [
+  { column: "email_id", property: "emailId" },
+  { column: "attachment_path", property: "attachmentPath" },
+  { column: "calendar_event_id", property: "calendarEventId" },
+  { column: "source_type", property: "sourceType" },
+  { column: "account", property: "account" },
+  { column: "date", property: "date" },
+  { column: "classification", property: "classification" },
+  { column: "archived_at", property: "archivedAt" },
+  { column: "processed_at", property: "processedAt" },
+] as const;
+
 function getDocumentsStorage(): StorageOperations<MedicalDocument> {
-  const backend = getStorageBackend();
-  if (backend === "sqlite") {
-    // Use SQLite repository (lazy-loaded synchronously for backwards compatibility)
-    // Note: For full async support, callers should use the repository directly
-    const sqlite = require("./sqlite.js") as typeof import("./sqlite.js");
-    return sqlite.createSqliteRepository<MedicalDocument>("documents", [
-      { column: "email_id", property: "emailId" },
-      { column: "attachment_path", property: "attachmentPath" },
-      { column: "calendar_event_id", property: "calendarEventId" },
-      { column: "source_type", property: "sourceType" },
-      { column: "account", property: "account" },
-      { column: "date", property: "date" },
-      { column: "classification", property: "classification" },
-      { column: "archived_at", property: "archivedAt" },
-      { column: "processed_at", property: "processedAt" },
-    ]) as StorageOperations<MedicalDocument>;
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = getSqliteModuleSync();
+    return sqlite.createSqliteRepository<MedicalDocument>(
+      "documents",
+      [...DOCUMENTS_INDEX_FIELDS]
+    ) as StorageOperations<MedicalDocument>;
   }
   return createStorage<MedicalDocument>(STORAGE_DIRS.documents, dateReviver);
 }
@@ -165,6 +173,21 @@ export async function findDocumentByEmailId(
 }
 
 /**
+ * Find ALL documents sharing an email ID (the email thread group).
+ * Returns only active (non-archived), non-calendar documents.
+ */
+export async function findActiveDocumentsByEmailId(
+  emailId: string
+): Promise<MedicalDocument[]> {
+  if (getStorageBackend() === "sqlite") {
+    return getSqliteModuleSync().queryActiveDocumentsByEmailId("documents", emailId);
+  }
+  return documentsStorage.find(
+    (d) => !d.archivedAt && d.emailId === emailId && d.sourceType !== "calendar"
+  );
+}
+
+/**
  * Find documents by attachment path.
  * Uses indexed lookup when SQLite backend is enabled.
  */
@@ -277,6 +300,28 @@ export async function searchDocuments(
 
     return searchableText.includes(normalizedSearch);
   });
+}
+
+/**
+ * Get non-archived documents.
+ * Uses SQL WHERE clause when SQLite backend is active (avoids loading all 3k+ docs).
+ */
+export async function getActiveDocuments(): Promise<MedicalDocument[]> {
+  if (getStorageBackend() === "sqlite") {
+    return getSqliteModuleSync().queryDocumentsByArchiveStatus("documents", false);
+  }
+  return documentsStorage.find((d) => !d.archivedAt);
+}
+
+/**
+ * Get archived documents.
+ * Uses SQL WHERE clause when SQLite backend is active.
+ */
+export async function getArchivedDocuments(): Promise<MedicalDocument[]> {
+  if (getStorageBackend() === "sqlite") {
+    return getSqliteModuleSync().queryDocumentsByArchiveStatus("documents", true);
+  }
+  return documentsStorage.find((d) => !!d.archivedAt);
 }
 
 /**

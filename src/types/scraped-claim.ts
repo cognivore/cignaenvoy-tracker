@@ -107,6 +107,18 @@ export interface ScrapedClaim {
   /** Individual line items within this claim */
   lineItems: ScrapedLineItem[];
 
+  /** Document filenames uploaded with this claim (without extensions) */
+  documentNames?: string[];
+
+  /** Provider/facility name from details page */
+  providerName?: string;
+
+  /** Country of treatment */
+  countryOfTreatment?: string;
+
+  /** Claim type (e.g., "Medical", "Dental") */
+  claimType?: string;
+
   /** Timestamp when this claim was scraped */
   scrapedAt: Date;
 

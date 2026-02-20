@@ -12,6 +12,7 @@ import {
 import {
   api,
   getDocumentFileUrl,
+  type Claim,
   type DraftClaim,
   type DraftClaimRange,
   type DraftClaimStatus,
@@ -19,9 +20,12 @@ import {
   type Illness,
   type MedicalDocument,
   type Patient,
+  type ScrapedClaim,
+  type DraftClaimMatchCandidate,
 } from '@/lib/api';
 import { useUnseenList } from '@/lib/useUnseenList';
 import { useUnseenDivider } from '@/lib/useUnseenDivider';
+import { useCachedFetch } from '@/lib/useCachedFetch';
 
 type DraftFilter = DraftClaimStatus | 'all';
 type DateMode = 'calendar' | 'manual';
@@ -30,6 +34,7 @@ const statusLabels: Record<DraftClaimStatus, { label: string; color: string }> =
   pending: { label: 'Pending', color: 'bg-bauhaus-yellow text-bauhaus-black' },
   accepted: { label: 'Accepted', color: 'bg-bauhaus-blue text-white' },
   rejected: { label: 'Rejected', color: 'bg-bauhaus-red text-white' },
+  submitted: { label: 'Submitted', color: 'bg-bauhaus-green text-white' },
 };
 
 const rangeOptions: Array<{ label: string; value: DraftClaimRange }> = [
@@ -150,17 +155,47 @@ export default function DraftClaims() {
     upsertItem,
     removeItem,
   } = useUnseenList<DraftClaim>({
-    fetcher: async () => {
-      const all = await api.getDraftClaims();
-      return all.filter((draft) => !draft.archivedAt);
-    },
+    fetcher: api.getActiveDraftClaims,
     cacheKey: 'draft-claims',
   });
 
-  const [documents, setDocuments] = useState<MedicalDocument[]>([]);
-  const [illnesses, setIllnesses] = useState<Illness[]>([]);
-  const [patients, setPatients] = useState<Patient[]>([]);
+  const { data: documentsCached, refresh: refreshDocuments } = useCachedFetch<MedicalDocument[]>({
+    key: 'documents-active',
+    fetcher: api.getActiveDocuments,
+    pollIntervalMs: 120_000,
+  });
+  const documents = documentsCached ?? [];
+
+  const { data: illnessesCached } = useCachedFetch<Illness[]>({
+    key: 'illnesses-active',
+    fetcher: api.getActiveIllnesses,
+    pollIntervalMs: 300_000,
+  });
+  const illnesses = illnessesCached ?? [];
+
+  const { data: patientsCached } = useCachedFetch<Patient[]>({
+    key: 'patients-active',
+    fetcher: api.getActivePatients,
+    pollIntervalMs: 300_000,
+  });
+  const patients = patientsCached ?? [];
+
+  const { data: scrapedClaimsCached } = useCachedFetch<ScrapedClaim[]>({
+    key: 'scraped-claims-active',
+    fetcher: api.getActiveScrapedClaims,
+    pollIntervalMs: 120_000,
+  });
+  const scrapedClaims = scrapedClaimsCached ?? [];
+
+  const { data: matchCandidatesCached, refresh: refreshMatches } = useCachedFetch<DraftClaimMatchCandidate[]>({
+    key: 'draft-claim-matches',
+    fetcher: api.getDraftClaimMatches,
+    pollIntervalMs: 120_000,
+  });
+  const matchCandidates = matchCandidatesCached ?? [];
+
   const [selectedDraft, setSelectedDraft] = useState<DraftClaim | null>(null);
+  const [linkedClaim, setLinkedClaim] = useState<Claim | null>(null);
   const [filter, setFilter] = useState<DraftFilter>('pending');
   const [processing, setProcessing] = useState<string | null>(null);
   const dividerRef = useRef<HTMLDivElement | null>(null);
@@ -180,30 +215,14 @@ export default function DraftClaims() {
   const [providerAddress, setProviderAddress] = useState('');
   const [providerCountry, setProviderCountry] = useState('');
   const [uploadingProof, setUploadingProof] = useState(false);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [saving, setSaving] = useState(false);
   const [documentsExpanded, setDocumentsExpanded] = useState(false);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    const loadSupportingData = async () => {
-      try {
-        const [docs, illnessesData, patientsData] = await Promise.all([
-          api.getDocuments(),
-          api.getIllnesses(),
-          api.getPatients(),
-        ]);
-        setDocuments(docs);
-        setIllnesses(illnessesData);
-        setPatients(patientsData);
-      } catch (err) {
-        console.error('Failed to load draft claim references:', err);
-      }
-    };
-
-    loadSupportingData();
-    const interval = setInterval(loadSupportingData, 60000);
-    return () => clearInterval(interval);
-  }, []);
+  const [linking, setLinking] = useState(false);
 
   useEffect(() => {
     if (!selectedDraft) return;
@@ -217,6 +236,16 @@ export default function DraftClaims() {
     setDocumentsExpanded(false);
   }, [selectedDraft?.id]);
 
+  useEffect(() => {
+    if (selectedDraft?.status === 'submitted') {
+      api.getClaimByDraftId(selectedDraft.id)
+        .then(setLinkedClaim)
+        .catch(() => setLinkedClaim(null));
+    } else {
+      setLinkedClaim(null);
+    }
+  }, [selectedDraft?.id, selectedDraft?.status]);
+
   function resetDraftForm(draft: DraftClaim | null) {
     if (!draft) {
       setSelectedIllnessId('');
@@ -225,6 +254,7 @@ export default function DraftClaims() {
       setManualDate('');
       setSelectedCalendarIds([]);
       setSelectedProofIds([]);
+      setSelectedDocumentIds([]);
       setPaymentProofNote('');
       setClaimType('Medical');
       setClaimCountry('');
@@ -243,17 +273,21 @@ export default function DraftClaims() {
       illness?.relevantAccounts?.[0];
     const symptomDefaults =
       submission.symptoms?.map((symptom) => symptom.name).filter(Boolean) ?? [];
-    const mappedSymptom = illness?.cignaSymptom?.trim();
-    const mappedDiagnosis = illness?.cignaDescription?.trim();
+    // Use defaultSymptoms from illness, or fall back to cignaSymptom/cignaDescription
+    const illnessDefaultSymptoms = illness?.defaultSymptoms?.map((s) => s.name).filter(Boolean) ?? [];
+    const legacySymptoms = [illness?.cignaSymptom?.trim(), illness?.cignaDescription?.trim()].filter(Boolean);
     const fallbackSymptoms =
       symptomDefaults.length > 0
         ? symptomDefaults
-        : [mappedSymptom, mappedDiagnosis].filter(Boolean);
+        : illnessDefaultSymptoms.length > 0
+          ? illnessDefaultSymptoms
+          : legacySymptoms;
 
     setSelectedIllnessId(draft.illnessId ?? '');
     setDoctorNotes(submission.progressReport ?? draft.doctorNotes ?? '');
     setSelectedCalendarIds(draft.calendarDocumentIds ?? []);
     setSelectedProofIds(draft.paymentProofDocumentIds ?? []);
+    setSelectedDocumentIds(draft.documentIds ?? []);
     setPaymentProofNote(draft.paymentProofText ?? '');
     setClaimType(submission.claimType ?? 'Medical');
     setClaimCountry(submission.country ?? '');
@@ -284,6 +318,7 @@ export default function DraftClaims() {
   function buildDraftUpdateInput(overrides?: {
     illnessId?: string;
     doctorNotes?: string;
+    documentIds?: string[];
     calendarDocumentIds?: string[];
     paymentProofDocumentIds?: string[];
     paymentProofText?: string;
@@ -301,6 +336,7 @@ export default function DraftClaims() {
     return {
       illnessId: selectedIllnessId,
       doctorNotes,
+      documentIds: selectedDocumentIds,
       calendarDocumentIds: selectedCalendarIds,
       paymentProofDocumentIds: selectedProofIds,
       paymentProofText: paymentProofNote,
@@ -326,9 +362,9 @@ export default function DraftClaims() {
     return trimmed;
   }
 
-  // Save draft changes
+  // Save draft changes (works for pending and accepted drafts)
   async function handleSaveDraft() {
-    if (!selectedDraft || selectedDraft.status !== 'pending') return;
+    if (!selectedDraft || selectedDraft.status === 'rejected') return;
     if (!requireClaimCountry()) {
       return;
     }
@@ -351,7 +387,7 @@ export default function DraftClaims() {
 
   const attachProofFile = useCallback(
     async (file: File) => {
-      if (!selectedDraft || selectedDraft.status !== 'pending') return;
+      if (!selectedDraft || selectedDraft.status === 'rejected') return;
 
       setUploadingProof(true);
       try {
@@ -361,8 +397,7 @@ export default function DraftClaims() {
         );
 
         setSelectedProofIds(nextProofIds);
-        const docs = await api.getDocuments();
-        setDocuments(docs);
+        await refreshDocuments();
 
         const updated = await api.updateDraftClaim(
           selectedDraft.id,
@@ -388,8 +423,36 @@ export default function DraftClaims() {
     ]
   );
 
+  const attachAttachmentFile = useCallback(
+    async (file: File) => {
+      if (!selectedDraft || selectedDraft.status === 'rejected') return;
+
+      setUploadingAttachment(true);
+      try {
+        const result = await api.uploadAttachmentFile(file);
+        const nextDocIds = Array.from(new Set([...selectedDocumentIds, result.id]));
+        setSelectedDocumentIds(nextDocIds);
+
+        await refreshDocuments();
+
+        const updated = await api.updateDraftClaim(
+          selectedDraft.id,
+          buildDraftUpdateInput({ documentIds: nextDocIds })
+        );
+        upsertItem(updated);
+        setSelectedDraft(updated);
+      } catch (err) {
+        console.error('Failed to upload attachment:', err);
+        alert(`Upload failed: ${err}`);
+      } finally {
+        setUploadingAttachment(false);
+      }
+    },
+    [selectedDraft, selectedDocumentIds, upsertItem]
+  );
+
   useEffect(() => {
-    if (!selectedDraft || selectedDraft.status !== 'pending') return;
+    if (!selectedDraft || selectedDraft.status === 'rejected') return;
 
     const handlePaste = (event: ClipboardEvent) => {
       const items = event.clipboardData?.items;
@@ -428,11 +491,6 @@ export default function DraftClaims() {
       ? selectedProofIds
       : selectedDraft?.paymentProofDocumentIds ?? [];
 
-  const activeProofDocs = useMemo(
-    () => documents.filter((doc) => activeProofIds.includes(doc.id)),
-    [documents, activeProofIds]
-  );
-
   const filteredDrafts = useMemo(() => {
     const base = filter === 'all' ? drafts : drafts.filter((draft) => draft.status === filter);
     // Sort by generatedAt descending (most recent first)
@@ -463,11 +521,13 @@ export default function DraftClaims() {
     pending: drafts.filter((draft) => draft.status === 'pending').length,
     accepted: drafts.filter((draft) => draft.status === 'accepted').length,
     rejected: drafts.filter((draft) => draft.status === 'rejected').length,
+    submitted: drafts.filter((draft) => draft.status === 'submitted').length,
   };
 
   const filterItems: FilterTabItem<DraftFilter>[] = [
     { key: 'pending', label: 'Pending', count: counts.pending },
     { key: 'accepted', label: 'Accepted', count: counts.accepted },
+    { key: 'submitted', label: 'Submitted', count: counts.submitted },
     { key: 'rejected', label: 'Rejected', count: counts.rejected },
     { key: 'all', label: 'All', count: drafts.length },
   ];
@@ -486,12 +546,34 @@ export default function DraftClaims() {
     for (const id of draftProofIds) seen.add(id);
     return Array.from(seen);
   }, [draftDocumentIds, draftProofIds]);
-  const supportingDocumentIds = useMemo(() => {
-    const primaryId = selectedDraft?.primaryDocumentId;
-    return draftDocumentIds.filter(
-      (id) => id !== primaryId && !draftProofIds.includes(id)
+
+  // Currently attached supporting documents (excluding primary and proofs)
+  // These may include documents from different email threads that were previously attached
+  const attachedSupportingDocs = useMemo(() => {
+    if (!selectedDraft) return [];
+    const primaryId = selectedDraft.primaryDocumentId;
+    const proofIds = new Set(selectedDraft.paymentProofDocumentIds ?? []);
+    return selectedDocumentIds
+      .filter((id) => id !== primaryId && !proofIds.has(id))
+      .map((id) => documentsById.get(id))
+      .filter((doc): doc is NonNullable<typeof doc> => !!doc);
+  }, [selectedDraft, selectedDocumentIds, documentsById]);
+
+  // Documents from the same email thread that can be added (not already attached)
+  const sameThreadCandidates = useMemo(() => {
+    if (!selectedDraft?.primaryDocumentId) return [];
+    const primaryDoc = documentsById.get(selectedDraft.primaryDocumentId);
+    if (!primaryDoc?.emailId) return [];
+
+    return documents.filter(
+      (doc) =>
+        !doc.archivedAt &&
+        doc.emailId === primaryDoc.emailId &&
+        doc.sourceType !== 'calendar' &&
+        doc.id !== selectedDraft.primaryDocumentId &&
+        !selectedDocumentIds.includes(doc.id)
     );
-  }, [draftDocumentIds, draftProofIds, selectedDraft?.primaryDocumentId]);
+  }, [documents, documentsById, selectedDraft?.primaryDocumentId, selectedDocumentIds]);
 
   // For form state (pending drafts)
   const selectedIllness = illnesses.find((illness) => illness.id === selectedIllnessId);
@@ -515,6 +597,19 @@ export default function DraftClaims() {
     const patient = patients.find((p) => p.id === illness.patientId);
     return patient?.name;
   }, [illnesses, patients]);
+  // Get potential matches for the selected draft (from scraped claims)
+  const draftMatchCandidate = useMemo(() => {
+    if (!selectedDraft) return null;
+    return matchCandidates.find(m => m.draftClaim.id === selectedDraft.id) ?? null;
+  }, [matchCandidates, selectedDraft?.id]);
+
+  // Get all scraped claims that could potentially match this draft (for manual linking)
+  const potentialScrapedMatches = useMemo(() => {
+    if (!selectedDraft || selectedDraft.status !== 'accepted') return [];
+    // Filter scraped claims that aren't already linked to another draft
+    return scrapedClaims.filter(sc => !sc.archivedAt);
+  }, [scrapedClaims, selectedDraft?.id, selectedDraft?.status]);
+
   const draftCountry =
     selectedDraft?.submission?.country?.trim() ??
     (selectedDraft?.status === 'pending' ? claimCountry.trim() : '');
@@ -673,6 +768,43 @@ export default function DraftClaims() {
     }
   }
 
+  async function handleLinkToScrapedClaim(scrapedClaimId: string) {
+    if (!selectedDraft) return;
+    setLinking(true);
+    try {
+      const result = await api.acceptDraftClaimMatch(selectedDraft.id, scrapedClaimId);
+      // Update the draft in local state - it's now "submitted"
+      upsertItem(result.draft);
+      setSelectedDraft(result.draft);
+      alert(`Draft linked to Cigna claim ${result.cignaClaimNumber} (Submission #${result.submissionNumber})`);
+      refreshMatches();
+    } catch (err) {
+      console.error('Failed to link draft to scraped claim:', err);
+      alert(`Error: ${err}`);
+    } finally {
+      setLinking(false);
+    }
+  }
+
+  async function handleAutoLink() {
+    setProcessing('autolink');
+    try {
+      const result = await api.autoLinkDraftClaims();
+      if (result.linked > 0) {
+        alert(`Auto-linked ${result.linked} draft claims to Cigna submissions`);
+        refreshDrafts();
+        refreshMatches();
+      } else {
+        alert('No drafts could be auto-linked (no matching submission numbers found)');
+      }
+    } catch (err) {
+      console.error('Failed to auto-link:', err);
+      alert(`Error: ${err}`);
+    } finally {
+      setProcessing(null);
+    }
+  }
+
   function renderDocumentGroup(title: string, ids: string[]) {
     if (ids.length === 0) return null;
     return (
@@ -720,6 +852,14 @@ export default function DraftClaims() {
     );
   }
 
+  function toggleDocumentId(id: string) {
+    // Don't allow removing the primary document
+    if (id === selectedDraft?.primaryDocumentId) return;
+    setSelectedDocumentIds((prev) =>
+      prev.includes(id) ? prev.filter((docId) => docId !== id) : [...prev, id]
+    );
+  }
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-8 flex-wrap gap-4">
@@ -741,6 +881,15 @@ export default function DraftClaims() {
               {processing === range.value ? 'Generating...' : range.label}
             </button>
           ))}
+          <button
+            onClick={handleAutoLink}
+            disabled={processing !== null}
+            className="flex items-center gap-2 px-4 py-2 bg-bauhaus-green text-white font-medium hover:bg-bauhaus-green/90 transition-colors disabled:opacity-60"
+            title="Auto-link accepted drafts to Cigna claims by submission number"
+          >
+            <Check size={18} />
+            {processing === 'autolink' ? 'Linking...' : 'Auto-Link Cigna'}
+          </button>
           <button
             onClick={handleRunMatching}
             disabled={processing !== null}
@@ -952,13 +1101,163 @@ export default function DraftClaims() {
                         </span>
                       </button>
                       {documentsExpanded && (
-                        <div className="mt-3 space-y-3">
-                          {selectedDraft.primaryDocumentId &&
-                            renderDocumentGroup('Primary document', [
-                              selectedDraft.primaryDocumentId,
-                            ])}
-                          {renderDocumentGroup('Supporting documents', supportingDocumentIds)}
-                          {renderDocumentGroup('Proof documents', draftProofIds)}
+                        <div className="mt-3 space-y-4">
+                          {/* Primary document (read-only) */}
+                          {selectedDraft.primaryDocumentId && (
+                            <div>
+                              <p className="text-xs text-bauhaus-gray mb-1">Primary document (required)</p>
+                              <ul className="space-y-1">
+                                {(() => {
+                                  const doc = documentsById.get(selectedDraft.primaryDocumentId);
+                                  const label = doc?.filename || doc?.subject || 'Document';
+                                  return (
+                                    <li className="flex items-center justify-between gap-2 text-sm p-2 bg-bauhaus-lightgray">
+                                      {doc?.attachmentPath ? (
+                                        <a
+                                          href={getDocumentFileUrl(selectedDraft.primaryDocumentId)}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-bauhaus-blue hover:underline inline-flex items-center gap-1 truncate"
+                                        >
+                                          {label}
+                                          <ExternalLink size={12} />
+                                        </a>
+                                      ) : (
+                                        <span className="truncate">{label}</span>
+                                      )}
+                                      <span className="text-xs text-bauhaus-gray">
+                                        {doc?.date ? formatDate(doc.date) : 'No date'}
+                                      </span>
+                                    </li>
+                                  );
+                                })()}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Currently attached supporting documents */}
+                          {attachedSupportingDocs.length > 0 && (
+                            <div>
+                              <p className="text-xs text-bauhaus-gray mb-1">
+                                Attached supporting documents (uncheck to remove)
+                              </p>
+                              <ul className="max-h-32 overflow-auto border border-bauhaus-lightgray divide-y divide-bauhaus-lightgray">
+                                {attachedSupportingDocs.map((doc) => {
+                                  const primaryDoc = documentsById.get(selectedDraft.primaryDocumentId);
+                                  const isDifferentThread = primaryDoc?.emailId && doc.emailId !== primaryDoc.emailId;
+                                  return (
+                                    <li key={doc.id} className={cn('p-2 flex items-start gap-2', isDifferentThread && 'bg-amber-50')}>
+                                      <input
+                                        type="checkbox"
+                                        checked={true}
+                                        onChange={() => toggleDocumentId(doc.id)}
+                                        className="mt-1"
+                                      />
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-sm font-medium flex items-center gap-1 truncate">
+                                          {doc.attachmentPath ? (
+                                            <a
+                                              href={getDocumentFileUrl(doc.id)}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="text-bauhaus-blue hover:underline inline-flex items-center gap-1"
+                                              onClick={(e) => e.stopPropagation()}
+                                            >
+                                              {doc.filename || doc.subject || 'Document'}
+                                              <ExternalLink size={12} />
+                                            </a>
+                                          ) : (
+                                            doc.filename || doc.subject || 'Document'
+                                          )}
+                                          {isDifferentThread && (
+                                            <span className="text-xs px-1 bg-amber-200 text-amber-800">Different thread</span>
+                                          )}
+                                        </p>
+                                        <p className="text-xs text-bauhaus-gray">
+                                          {doc.date ? formatDate(doc.date) : 'No date'}
+                                        </p>
+                                      </div>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Same-thread documents that can be added */}
+                          {sameThreadCandidates.length > 0 && (
+                            <div>
+                              <p className="text-xs text-bauhaus-gray mb-1">
+                                Add from same email thread
+                              </p>
+                              <ul className="max-h-32 overflow-auto border border-bauhaus-lightgray divide-y divide-bauhaus-lightgray">
+                                {sameThreadCandidates.map((doc) => (
+                                  <li key={doc.id} className="p-2 flex items-start gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={false}
+                                      onChange={() => toggleDocumentId(doc.id)}
+                                      className="mt-1"
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-sm font-medium flex items-center gap-1 truncate">
+                                        {doc.attachmentPath ? (
+                                          <a
+                                            href={getDocumentFileUrl(doc.id)}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-bauhaus-blue hover:underline inline-flex items-center gap-1"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            {doc.filename || doc.subject || 'Document'}
+                                            <ExternalLink size={12} />
+                                          </a>
+                                        ) : (
+                                          doc.filename || doc.subject || 'Document'
+                                        )}
+                                      </p>
+                                      <p className="text-xs text-bauhaus-gray">
+                                        {doc.date ? formatDate(doc.date) : 'No date'}
+                                      </p>
+                                    </div>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Upload new attachment */}
+                          <div>
+                            <input
+                              ref={attachmentInputRef}
+                              type="file"
+                              accept="image/*,application/pdf"
+                              className="hidden"
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                await attachAttachmentFile(file);
+                                if (attachmentInputRef.current) {
+                                  attachmentInputRef.current.value = '';
+                                }
+                              }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => attachmentInputRef.current?.click()}
+                              disabled={uploadingAttachment}
+                              className={cn(
+                                'w-full flex items-center justify-center gap-2 p-2 border border-dashed border-bauhaus-gray text-bauhaus-gray hover:border-bauhaus-blue hover:text-bauhaus-blue transition-colors text-sm',
+                                uploadingAttachment && 'opacity-60 cursor-not-allowed'
+                              )}
+                            >
+                              <Upload size={14} />
+                              {uploadingAttachment ? 'Uploading...' : 'Upload attachment'}
+                            </button>
+                          </div>
+
+                          {/* Proof documents (reference - editing happens in proof section) */}
+                          {selectedProofIds.length > 0 && renderDocumentGroup('Proof documents', selectedProofIds)}
                         </div>
                       )}
                     </div>
@@ -1073,7 +1372,29 @@ export default function DraftClaims() {
                         <label className="block text-sm text-bauhaus-gray mb-1">Illness</label>
                         <select
                           value={selectedIllnessId}
-                          onChange={(e) => setSelectedIllnessId(e.target.value)}
+                          onChange={(e) => {
+                            const newIllnessId = e.target.value;
+                            setSelectedIllnessId(newIllnessId);
+
+                            // Auto-fill symptoms from the selected illness
+                            if (newIllnessId) {
+                              const illness = illnesses.find((i) => i.id === newIllnessId);
+                              if (illness) {
+                                // Only auto-fill if current symptoms are empty
+                                const currentSymptoms = symptomInputs.filter(Boolean);
+                                if (currentSymptoms.length === 0) {
+                                  const defaultSymptoms = illness.defaultSymptoms?.map((s) => s.name) ?? [];
+                                  const legacySymptoms = [illness.cignaSymptom, illness.cignaDescription].filter(Boolean);
+                                  const symptoms = defaultSymptoms.length > 0 ? defaultSymptoms : legacySymptoms;
+                                  setSymptomInputs([
+                                    symptoms[0] ?? '',
+                                    symptoms[1] ?? '',
+                                    symptoms[2] ?? '',
+                                  ]);
+                                }
+                              }
+                            }
+                          }}
                           className="w-full p-2 border-2 border-bauhaus-black focus:outline-none focus:ring-2 focus:ring-bauhaus-blue"
                         >
                           <option value="">Select an illness...</option>
@@ -1313,72 +1634,489 @@ export default function DraftClaims() {
                       </button>
                     </div>
                   </>
-                ) : (
+                ) : selectedDraft.status === 'accepted' ? (
+                  /* Accepted drafts - editable until promoted to Claim */
                   <div className="border-t-2 border-bauhaus-black pt-4">
-                    {selectedDraft.status === 'accepted' && (
-                      <>
-                        <DetailRow label="Patient" value={draftPatient?.name ?? 'Unknown'} />
-                        <DetailRow label="Illness" value={draftIllness?.name ?? selectedDraft.illnessId ?? 'Unknown'} />
-                        <DetailRow
-                          label="Country of Treatment"
-                          value={selectedDraft.submission?.country ?? 'Unknown'}
-                        />
-                        {selectedDraft.doctorNotes && (
-                          <DetailRow label="Doctor Notes" value={selectedDraft.doctorNotes} />
-                        )}
-                        <DetailRow label="Payment Proof" value={proofSummary} />
-                        {activeProofDocs.length > 0 && (
-                          <div className="pt-2">
-                            <p className="text-xs text-bauhaus-gray mb-1">Proof attachments</p>
-                            <ul className="space-y-1">
-                              {activeProofDocs.map((doc) => (
-                                <li key={doc.id}>
-                                  {doc.attachmentPath ? (
+                    <DetailRow label="Patient" value={draftPatient?.name ?? 'Unknown'} />
+                    <DetailRow label="Illness" value={draftIllness?.name ?? selectedDraft.illnessId ?? 'Unknown'} />
+                    <DetailRow
+                      label="Country of Treatment"
+                      value={selectedDraft.submission?.country ?? 'Unknown'}
+                    />
+                    {selectedDraft.doctorNotes && (
+                      <DetailRow label="Doctor Notes" value={selectedDraft.doctorNotes} />
+                    )}
+
+                    {/* Editable documents section */}
+                    <div className="mt-4 mb-4">
+                      <button
+                        type="button"
+                        onClick={() => setDocumentsExpanded((prev) => !prev)}
+                        className="w-full flex items-center justify-between text-sm font-medium border-b border-bauhaus-lightgray pb-2"
+                      >
+                        <span>Attached Documents</span>
+                        <span className="flex items-center gap-2 text-xs text-bauhaus-gray">
+                          {selectedDocumentIds.length} docs
+                          <ChevronDown
+                            size={16}
+                            className={cn(
+                              'transition-transform',
+                              documentsExpanded && 'rotate-180'
+                            )}
+                          />
+                        </span>
+                      </button>
+                      {documentsExpanded && (
+                        <div className="mt-3 space-y-4">
+                          {/* Primary document (read-only) */}
+                          {selectedDraft.primaryDocumentId && (
+                            <div>
+                              <p className="text-xs text-bauhaus-gray mb-1">Primary document (required)</p>
+                              <div className="p-2 bg-bauhaus-lightgray text-sm">
+                                {(() => {
+                                  const doc = documentsById.get(selectedDraft.primaryDocumentId);
+                                  return doc?.attachmentPath ? (
                                     <a
-                                      href={getDocumentFileUrl(doc.id)}
+                                      href={getDocumentFileUrl(selectedDraft.primaryDocumentId)}
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className="text-sm text-bauhaus-blue hover:underline inline-flex items-center gap-1"
+                                      className="text-bauhaus-blue hover:underline inline-flex items-center gap-1"
                                     >
-                                      {doc.filename || doc.subject || 'Attachment'}
+                                      {doc.filename || doc.subject || 'Document'}
                                       <ExternalLink size={12} />
                                     </a>
                                   ) : (
-                                    <span className="text-sm">
-                                      {doc.filename || doc.subject || 'Attachment'}
-                                    </span>
-                                  )}
-                                </li>
-                              ))}
-                            </ul>
+                                    <span>{doc?.filename || doc?.subject || 'Document'}</span>
+                                  );
+                                })()}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Currently attached supporting documents */}
+                          {attachedSupportingDocs.length > 0 && (
+                            <div>
+                              <p className="text-xs text-bauhaus-gray mb-1">
+                                Attached supporting documents (uncheck to remove)
+                              </p>
+                              <ul className="max-h-32 overflow-auto border border-bauhaus-lightgray divide-y divide-bauhaus-lightgray">
+                                {attachedSupportingDocs.map((doc) => {
+                                  const primaryDoc = documentsById.get(selectedDraft.primaryDocumentId);
+                                  const isDifferentThread = primaryDoc?.emailId && doc.emailId !== primaryDoc.emailId;
+                                  return (
+                                    <li key={doc.id} className={cn('p-2 flex items-start gap-2', isDifferentThread && 'bg-amber-50')}>
+                                      <input
+                                        type="checkbox"
+                                        checked={true}
+                                        onChange={() => toggleDocumentId(doc.id)}
+                                        className="mt-1"
+                                      />
+                                      <div className="min-w-0 flex-1">
+                                        <p className="text-sm font-medium flex items-center gap-1 truncate">
+                                          {doc.attachmentPath ? (
+                                            <a
+                                              href={getDocumentFileUrl(doc.id)}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="text-bauhaus-blue hover:underline inline-flex items-center gap-1"
+                                              onClick={(e) => e.stopPropagation()}
+                                            >
+                                              {doc.filename || doc.subject || 'Document'}
+                                              <ExternalLink size={12} />
+                                            </a>
+                                          ) : (
+                                            doc.filename || doc.subject || 'Document'
+                                          )}
+                                          {isDifferentThread && (
+                                            <span className="text-xs px-1 bg-amber-200 text-amber-800">Different thread</span>
+                                          )}
+                                        </p>
+                                        <p className="text-xs text-bauhaus-gray">
+                                          {doc.date ? formatDate(doc.date) : 'No date'}
+                                        </p>
+                                      </div>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Same-thread documents that can be added */}
+                          {sameThreadCandidates.length > 0 && (
+                            <div>
+                              <p className="text-xs text-bauhaus-gray mb-1">
+                                Add from same email thread
+                              </p>
+                              <ul className="max-h-32 overflow-auto border border-bauhaus-lightgray divide-y divide-bauhaus-lightgray">
+                                {sameThreadCandidates.map((doc) => (
+                                  <li key={doc.id} className="p-2 flex items-start gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={false}
+                                      onChange={() => toggleDocumentId(doc.id)}
+                                      className="mt-1"
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-sm font-medium flex items-center gap-1 truncate">
+                                        {doc.attachmentPath ? (
+                                          <a
+                                            href={getDocumentFileUrl(doc.id)}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-bauhaus-blue hover:underline inline-flex items-center gap-1"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            {doc.filename || doc.subject || 'Document'}
+                                            <ExternalLink size={12} />
+                                          </a>
+                                        ) : (
+                                          doc.filename || doc.subject || 'Document'
+                                        )}
+                                      </p>
+                                      <p className="text-xs text-bauhaus-gray">
+                                        {doc.date ? formatDate(doc.date) : 'No date'}
+                                      </p>
+                                    </div>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Upload new attachment */}
+                          <div>
+                            <input
+                              ref={attachmentInputRef}
+                              type="file"
+                              accept="image/*,application/pdf"
+                              className="hidden"
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                await attachAttachmentFile(file);
+                                if (attachmentInputRef.current) {
+                                  attachmentInputRef.current.value = '';
+                                }
+                              }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => attachmentInputRef.current?.click()}
+                              disabled={uploadingAttachment}
+                              className={cn(
+                                'w-full flex items-center justify-center gap-2 p-2 border border-dashed border-bauhaus-gray text-bauhaus-gray hover:border-bauhaus-blue hover:text-bauhaus-blue transition-colors text-sm',
+                                uploadingAttachment && 'opacity-60 cursor-not-allowed'
+                              )}
+                            >
+                              <Upload size={14} />
+                              {uploadingAttachment ? 'Uploading...' : 'Upload attachment'}
+                            </button>
                           </div>
-                        )}
-                        {selectedDraft.paymentProofText && (
-                          <div className="pt-2">
-                            <p className="text-xs text-bauhaus-gray mb-1">Proof note</p>
-                            <p className="text-sm">{selectedDraft.paymentProofText}</p>
+
+                          {/* Proof documents */}
+                          {selectedProofIds.length > 0 && (
+                            <div>
+                              <p className="text-xs text-bauhaus-gray mb-1">Payment proofs</p>
+                              <ul className="space-y-1">
+                                {selectedProofIds.map((id) => {
+                                  const doc = documentsById.get(id);
+                                  return (
+                                    <li key={id} className="flex items-center gap-2 text-sm p-2 bg-emerald-50 border border-emerald-200">
+                                      {doc?.attachmentPath ? (
+                                        <a
+                                          href={getDocumentFileUrl(id)}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-emerald-700 hover:underline inline-flex items-center gap-1 truncate"
+                                        >
+                                          {doc.filename || doc.subject || 'Proof'}
+                                          <ExternalLink size={12} />
+                                        </a>
+                                      ) : (
+                                        <span className="truncate">{doc?.filename || doc?.subject || 'Proof'}</span>
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Save button */}
+                    <button
+                      onClick={handleSaveDraft}
+                      disabled={saving || processing !== null}
+                      className={cn(
+                        'w-full mb-4 px-4 py-2 text-sm font-medium bg-bauhaus-black text-white hover:bg-bauhaus-gray transition-colors',
+                        (saving || processing !== null) && 'opacity-60 cursor-not-allowed'
+                      )}
+                    >
+                      {saving ? 'Saving...' : 'Save Changes'}
+                    </button>
+
+                    {/* CIGNA MATCHING SECTION - Link to existing Cigna claims */}
+                    <div className="border-t-2 border-bauhaus-blue pt-4 mt-4 mb-4">
+                      <h3 className="font-bold mb-3 flex items-center gap-2 text-bauhaus-blue">
+                        <Check size={18} />
+                        Link to Cigna Claim
+                      </h3>
+
+                      {draftMatchCandidate ? (
+                        /* Best match found automatically */
+                        <div className="mb-3">
+                          <div className="p-3 bg-bauhaus-green/10 border border-bauhaus-green mb-2">
+                            <p className="text-xs font-medium text-bauhaus-green uppercase tracking-wide mb-2">
+                              Match Found ({draftMatchCandidate.match.confidence} confidence)
+                            </p>
+                            <p className="font-medium">
+                              Cigna #{draftMatchCandidate.scrapedClaim.cignaClaimNumber}
+                            </p>
+                            <p className="text-sm text-bauhaus-gray">
+                              Submission #{draftMatchCandidate.scrapedClaim.submissionNumber}
+                            </p>
+                            <p className="text-sm">
+                              {draftMatchCandidate.scrapedClaim.memberName} • {formatCurrency(draftMatchCandidate.scrapedClaim.claimAmount, draftMatchCandidate.scrapedClaim.claimCurrency)}
+                            </p>
+                            <p className="text-xs text-bauhaus-gray">
+                              Treatment: {formatDate(draftMatchCandidate.scrapedClaim.treatmentDate)}
+                            </p>
+                            {draftMatchCandidate.match.matchMethod === 'heuristic' && (
+                              <p className="text-xs text-bauhaus-gray mt-1">
+                                Matched by: {draftMatchCandidate.match.matchDetails.amountMatch ? '✓ Amount' : ''} {draftMatchCandidate.match.matchDetails.patientMatch ? '✓ Patient' : ''} {draftMatchCandidate.match.matchDetails.treatmentDateMatch ? '✓ Date' : ''}
+                              </p>
+                            )}
                           </div>
-                        )}
-                        <div className="mt-4">
-                          <p className="text-xs text-bauhaus-gray mb-2">
-                            Opens a browser window, fills all fields, then pauses for you to review and click Submit.
-                          </p>
                           <button
-                            onClick={handleSubmitClaim}
-                            disabled={processing !== null}
+                            onClick={() => handleLinkToScrapedClaim(draftMatchCandidate.scrapedClaim.id)}
+                            disabled={linking}
                             className={cn(
-                              'w-full flex items-center justify-center gap-2 px-4 py-3 bg-bauhaus-blue text-white font-medium hover:bg-bauhaus-blue/90 transition-colors',
-                              processing !== null && 'opacity-60 cursor-not-allowed'
+                              'w-full flex items-center justify-center gap-2 px-4 py-3 bg-bauhaus-green text-white font-medium hover:bg-bauhaus-green/90 transition-colors',
+                              linking && 'opacity-60 cursor-not-allowed'
                             )}
                           >
-                            {processing === 'submit' ? 'Opening browser...' : 'Start Cigna Submission'}
+                            <Check size={18} />
+                            {linking ? 'Linking...' : 'Confirm & Mark as Submitted'}
                           </button>
                         </div>
-                      </>
+                      ) : potentialScrapedMatches.length > 0 ? (
+                        /* No auto-match, show manual selection */
+                        <div className="mb-3">
+                          <p className="text-xs text-bauhaus-gray mb-2">
+                            No automatic match found. Select a Cigna claim to link:
+                          </p>
+                          <div className="max-h-40 overflow-auto border border-bauhaus-lightgray divide-y divide-bauhaus-lightgray">
+                            {potentialScrapedMatches.slice(0, 10).map((sc) => (
+                              <div
+                                key={sc.id}
+                                className="p-2 hover:bg-bauhaus-lightgray cursor-pointer"
+                                onClick={() => handleLinkToScrapedClaim(sc.id)}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="font-medium">#{sc.cignaClaimNumber}</span>
+                                  <span className="font-bold text-sm">{formatCurrency(sc.claimAmount, sc.claimCurrency)}</span>
+                                </div>
+                                <div className="flex items-center justify-between text-xs text-bauhaus-gray">
+                                  <span>{sc.memberName}</span>
+                                  <span>{formatDate(sc.treatmentDate)}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        /* No scraped claims available */
+                        <p className="text-sm text-bauhaus-gray mb-3">
+                          No Cigna claims available to link. Run a scrape first.
+                        </p>
+                      )}
+
+                      <p className="text-xs text-bauhaus-gray">
+                        Linking marks this draft as "Submitted" with the Cigna claim ID.
+                      </p>
+                    </div>
+
+                    {/* OR: Start new submission */}
+                    <div className="border-t border-bauhaus-lightgray pt-4">
+                      <p className="text-xs text-bauhaus-gray mb-2">
+                        <strong>Or</strong> start a new submission to Cigna (opens browser):
+                      </p>
+                      <button
+                        onClick={handleSubmitClaim}
+                        disabled={processing !== null}
+                        className={cn(
+                          'w-full flex items-center justify-center gap-2 px-4 py-3 bg-bauhaus-blue text-white font-medium hover:bg-bauhaus-blue/90 transition-colors',
+                          processing !== null && 'opacity-60 cursor-not-allowed'
+                        )}
+                      >
+                        {processing === 'submit' ? 'Opening browser...' : 'Start Cigna Submission'}
+                      </button>
+                    </div>
+                    <div className="mt-4">
+                      <button
+                        onClick={handleMarkPending}
+                        disabled={processing !== null}
+                        className="flex items-center gap-2 px-3 py-2 border-2 border-bauhaus-black font-medium hover:bg-bauhaus-lightgray transition-colors disabled:opacity-60"
+                      >
+                        <RotateCcw size={16} />
+                        {processing === 'pending' ? 'Marking...' : 'Mark as Pending'}
+                      </button>
+                    </div>
+                  </div>
+                ) : selectedDraft.status === 'submitted' ? (
+                  /* Submitted drafts - read-only with Cigna submission info */
+                  <div className="border-t-2 border-bauhaus-green pt-4 space-y-1">
+                    {/* Cigna Submission Info - highlighted */}
+                    <div className="mb-4 p-3 bg-bauhaus-green/10 border border-bauhaus-green">
+                      <p className="text-xs font-medium text-bauhaus-green uppercase tracking-wide mb-2">
+                        Linked to Cigna
+                      </p>
+                      {/* Show from draft first (direct link), then fall back to linkedClaim */}
+                      <DetailRow
+                        label="Submission ID"
+                        value={
+                          selectedDraft.submissionNumber ? (
+                            <span className="font-mono font-bold text-bauhaus-green">
+                              {selectedDraft.submissionNumber}
+                            </span>
+                          ) : linkedClaim?.submissionNumber ? (
+                            <span className="font-mono font-bold text-bauhaus-green">
+                              {linkedClaim.submissionNumber}
+                            </span>
+                          ) : (
+                            <span className="text-bauhaus-gray">Not available</span>
+                          )
+                        }
+                      />
+                      {(selectedDraft.cignaClaimNumber || linkedClaim?.cignaClaimId) && (
+                        <DetailRow
+                          label="Cigna Claim ID"
+                          value={<span className="font-mono">{selectedDraft.cignaClaimNumber || linkedClaim?.cignaClaimId}</span>}
+                        />
+                      )}
+                      {selectedDraft.linkedAt && (
+                        <DetailRow label="Linked At" value={formatDate(selectedDraft.linkedAt)} />
+                      )}
+                      {linkedClaim?.submittedAt && (
+                        <DetailRow label="Submitted At" value={formatDate(linkedClaim.submittedAt)} />
+                      )}
+                      {linkedClaim?.submissionUrl && (
+                        <DetailRow
+                          label="View on Cigna"
+                          value={
+                            <a
+                              href={linkedClaim.submissionUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-bauhaus-blue hover:underline inline-flex items-center gap-1"
+                            >
+                              Open
+                              <ExternalLink size={12} />
+                            </a>
+                          }
+                        />
+                      )}
+                    </div>
+
+                    {/* Claim Details */}
+                    <DetailRow label="Patient" value={draftPatient?.name ?? 'Unknown'} />
+                    <DetailRow label="Illness" value={draftIllness?.name ?? selectedDraft.illnessId ?? 'Unknown'} />
+                    <DetailRow label="Amount" value={formatCurrency(selectedDraft.payment.amount, selectedDraft.payment.currency)} />
+                    <DetailRow
+                      label="Country of Treatment"
+                      value={selectedDraft.submission?.country ?? 'Unknown'}
+                    />
+                    <DetailRow label="Treatment Date" value={selectedDraft.treatmentDate ? formatDate(selectedDraft.treatmentDate) : 'Unknown'} />
+                    <DetailRow label="Claim Type" value={selectedDraft.submission?.claimType ?? 'Medical'} />
+
+                    {selectedDraft.submission?.symptoms && selectedDraft.submission.symptoms.length > 0 && (
+                      <DetailRow
+                        label="Symptoms"
+                        value={selectedDraft.submission.symptoms.map((s) => s.name).filter(Boolean).join(', ')}
+                      />
                     )}
-                    {selectedDraft.status === 'rejected' && (
-                      <p className="text-sm text-bauhaus-gray">This draft claim was rejected.</p>
+
+                    {selectedDraft.submission?.providerName && (
+                      <DetailRow label="Provider" value={selectedDraft.submission.providerName} />
                     )}
+                    {selectedDraft.submission?.providerAddress && (
+                      <DetailRow label="Provider Address" value={selectedDraft.submission.providerAddress} />
+                    )}
+
+                    {selectedDraft.doctorNotes && (
+                      <div className="mt-4">
+                        <p className="text-xs text-bauhaus-gray mb-1">Doctor Notes / Progress Report</p>
+                        <p className="text-sm whitespace-pre-wrap bg-bauhaus-lightgray/50 p-2 max-h-32 overflow-auto">
+                          {selectedDraft.doctorNotes}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Documents (read-only) */}
+                    <div className="mt-4">
+                      <p className="text-xs text-bauhaus-gray mb-2">Attached Documents</p>
+                      <ul className="space-y-1">
+                        {selectedDraft.documentIds?.map((docId) => {
+                          const doc = documentsById.get(docId);
+                          return (
+                            <li key={docId} className="text-sm p-2 bg-bauhaus-lightgray/30 flex items-center gap-2">
+                              <FileText size={14} className="text-bauhaus-gray" />
+                              {doc?.attachmentPath ? (
+                                <a
+                                  href={getDocumentFileUrl(docId)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-bauhaus-blue hover:underline inline-flex items-center gap-1"
+                                >
+                                  {doc.filename || doc.subject || 'Document'}
+                                  <ExternalLink size={12} />
+                                </a>
+                              ) : (
+                                <span>{doc?.filename || doc?.subject || 'Document'}</span>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+
+                    {/* Payment Proofs (read-only) */}
+                    {selectedDraft.paymentProofDocumentIds && selectedDraft.paymentProofDocumentIds.length > 0 && (
+                      <div className="mt-4">
+                        <p className="text-xs text-bauhaus-gray mb-2">Payment Proofs</p>
+                        <ul className="space-y-1">
+                          {selectedDraft.paymentProofDocumentIds.map((docId) => {
+                            const doc = documentsById.get(docId);
+                            return (
+                              <li key={docId} className="text-sm p-2 bg-emerald-50 border border-emerald-200 flex items-center gap-2">
+                                <FileText size={14} className="text-emerald-600" />
+                                {doc?.attachmentPath ? (
+                                  <a
+                                    href={getDocumentFileUrl(docId)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-emerald-700 hover:underline inline-flex items-center gap-1"
+                                  >
+                                    {doc.filename || doc.subject || 'Proof'}
+                                    <ExternalLink size={12} />
+                                  </a>
+                                ) : (
+                                  <span>{doc?.filename || doc?.subject || 'Proof'}</span>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  /* Rejected drafts - read-only */
+                  <div className="border-t-2 border-bauhaus-black pt-4">
+                    <p className="text-sm text-bauhaus-gray">This draft claim was rejected.</p>
                     <div className="mt-4">
                       <button
                         onClick={handleMarkPending}

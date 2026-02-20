@@ -22,7 +22,14 @@ fi
 
 # Fetch Cigna credentials from passveil
 echo "Fetching Cigna credentials from passveil..."
-CREDS=$(passveil show customer.cignaenvoy.com/jons@geosurge.ai)
+# Credentials path from env var (e.g., customer.cignaenvoy.com/user@example.com)
+if [ -z "$PASSVEIL_CIGNA_PATH" ]; then
+  echo "  ❌ PASSVEIL_CIGNA_PATH environment variable not set"
+  echo "     Set it to your passveil credentials path, e.g.:"
+  echo "     export PASSVEIL_CIGNA_PATH=customer.cignaenvoy.com/your-email@example.com"
+  exit 1
+fi
+CREDS=$(passveil show "$PASSVEIL_CIGNA_PATH")
 # First line contains "Your Cigna Healthcare ID number is: XXXXXXXX" - extract just the number
 export CIGNA_ID=$(echo "$CREDS" | head -1 | grep -oE '[0-9]+$')
 # Password is on the last non-empty line
@@ -45,6 +52,7 @@ nix develop --command env \
   CIGNA_ID="$CIGNA_ID" \
   CIGNA_PASSWORD="$CIGNA_PASSWORD" \
   CIGNA_TOTP_SECRET="$CIGNA_TOTP_SECRET" \
+  STORAGE_BACKEND=sqlite \
   npx tsx src/server/api.ts > "$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 echo $BACKEND_PID > "$PID_DIR/backend.pid"

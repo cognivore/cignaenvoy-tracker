@@ -1,7 +1,8 @@
 /**
  * Illness Storage
  *
- * JSON file storage for illness/condition entities.
+ * Backend-aware storage for illness/condition entities.
+ * Uses SQLite when STORAGE_BACKEND=sqlite, otherwise JSON files.
  */
 
 import type {
@@ -15,15 +16,28 @@ import {
   STORAGE_DIRS,
   generateId,
   dateReviver,
+  type StorageOperations,
 } from "./base.js";
+import { getStorageBackend } from "./repository.js";
+import { createRequire } from "node:module";
+
+const esmRequire = createRequire(import.meta.url);
+
+function getIllnessesStorage(): StorageOperations<Illness> {
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = esmRequire("./sqlite.js") as typeof import("./sqlite.js");
+    return sqlite.createSqliteRepository<Illness>("illnesses", [
+      { column: "patient_id", property: "patientId" },
+      { column: "name", property: "name" },
+    ]) as StorageOperations<Illness>;
+  }
+  return createStorage<Illness>(STORAGE_DIRS.illnesses, dateReviver);
+}
 
 /**
  * Storage operations for illnesses.
  */
-export const illnessesStorage = createStorage<Illness>(
-  STORAGE_DIRS.illnesses,
-  dateReviver
-);
+export const illnessesStorage = getIllnessesStorage();
 
 /**
  * Create a new illness record.

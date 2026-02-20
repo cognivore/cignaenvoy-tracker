@@ -7,7 +7,7 @@
 
 import type { MedicalDocument } from "../types/medical-document.js";
 import type { DraftClaim, DraftClaimRange } from "../types/draft-claim.js";
-import { documentsStorage } from "../storage/documents.js";
+import { getActiveDocuments } from "../storage/documents.js";
 import { assignmentsStorage } from "../storage/assignments.js";
 import {
     createDraftClaim,
@@ -20,6 +20,25 @@ import {
 import { toDraftClaimPayment } from "./draft-claim-payments.js";
 import { dedupeIds } from "./ids.js";
 import { resolvePaymentProofDocuments } from "./payment-proof.js";
+
+/**
+ * Get all documents from the same email thread as the primary document.
+ * Excludes calendar documents and archived documents.
+ */
+function getEmailThreadDocuments(
+    primaryDocument: MedicalDocument,
+    allDocuments: MedicalDocument[]
+): MedicalDocument[] {
+    const emailId = primaryDocument.emailId;
+    if (!emailId) return [primaryDocument];
+
+    return allDocuments.filter(
+        (doc) =>
+            !doc.archivedAt &&
+            doc.emailId === emailId &&
+            doc.sourceType !== "calendar"
+    );
+}
 
 /**
  * Determine if a document is within the requested date range.
@@ -57,7 +76,7 @@ export async function generateDraftClaims(
     now: Date = new Date()
 ): Promise<DraftClaim[]> {
     const [documents, assignments, existingDrafts] = await Promise.all([
-        documentsStorage.getAll(),
+        getActiveDocuments(),
         assignmentsStorage.getAll(),
         draftClaimsStorage.getAll(),
     ]);
@@ -90,13 +109,20 @@ export async function generateDraftClaims(
         const payment = buildDraftPayment(document);
         if (!payment) continue;
 
+        // Get all documents from the same email thread
+        const threadDocs = getEmailThreadDocuments(document, documents);
+        const threadIds = threadDocs.map((doc) => doc.id);
+
+        // Resolve payment proofs (also restricted to same thread)
         const proofDocs = resolvePaymentProofDocuments({
             documents,
             primaryDocument: document,
             payment,
         });
         const proofIds = proofDocs.map((doc) => doc.id);
-        const documentIds = dedupeIds([document.id, ...proofIds]);
+
+        // Combine: primary + thread docs + proof docs (deduplicated)
+        const documentIds = dedupeIds([document.id, ...threadIds, ...proofIds]);
 
         const draft = await createDraftClaim({
             status: "pending",

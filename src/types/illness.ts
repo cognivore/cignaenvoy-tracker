@@ -3,6 +3,8 @@
  * Tracks patient conditions (acute/chronic) that generate claims.
  */
 
+import type { Symptom } from "./claim.js";
+
 /** Type of illness based on duration and nature */
 export type IllnessType = "acute" | "chronic";
 
@@ -87,6 +89,12 @@ export interface Illness {
    * Populated from evidence documents during hydration confirmation.
    */
   relevantAccounts: RelevantAccount[];
+
+  /**
+   * Default symptoms to auto-fill when this illness is selected for a claim.
+   * These should match Cigna Envoy symptom dropdown options.
+   */
+  defaultSymptoms?: Symptom[];
 
   /** Creation timestamp */
   createdAt: Date;

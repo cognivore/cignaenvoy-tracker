@@ -1,7 +1,8 @@
 /**
  * Draft Claims Storage
  *
- * JSON file storage for locally generated draft claims.
+ * Backend-aware storage for locally generated draft claims.
+ * Uses SQLite when STORAGE_BACKEND=sqlite, otherwise JSON files.
  */
 
 import type {
@@ -15,15 +16,25 @@ import {
   STORAGE_DIRS,
   generateId,
   dateReviver,
+  type StorageOperations,
 } from "./base.js";
+import { getStorageBackend } from "./repository.js";
+import { createRequire } from "node:module";
 
-/**
- * Storage operations for draft claims.
- */
-export const draftClaimsStorage = createStorage<DraftClaim>(
-  STORAGE_DIRS.draftClaims,
-  dateReviver
-);
+const esmRequire = createRequire(import.meta.url);
+
+function getDraftClaimsStorage(): StorageOperations<DraftClaim> {
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = esmRequire("./sqlite.js") as typeof import("./sqlite.js");
+    return sqlite.createSqliteRepository<DraftClaim>("draft_claims", [
+      { column: "status", property: "status" },
+      { column: "archived_at", property: "archivedAt" },
+    ]) as StorageOperations<DraftClaim>;
+  }
+  return createStorage<DraftClaim>(STORAGE_DIRS.draftClaims, dateReviver);
+}
+
+export const draftClaimsStorage = getDraftClaimsStorage();
 
 /**
  * Create a new draft claim record.

@@ -14,7 +14,7 @@ import { getStorageBackend } from "../storage/repository.js";
 
 const DEFAULT_INCREMENTAL_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 const DEFAULT_FULL_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const STARTUP_DELAY_MS = 5_000;
+const STARTUP_DELAY_MS = 60_000; // wait 60s before first scan so server is responsive
 
 let isRunning = false;
 

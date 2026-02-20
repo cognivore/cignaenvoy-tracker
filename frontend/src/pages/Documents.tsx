@@ -34,13 +34,15 @@ export default function Documents() {
     markAllSeen,
     upsertItem,
   } = useUnseenList<MedicalDocument>({
-    fetcher: api.getDocuments,
-    cacheKey: 'documents',
+    fetcher: api.getActiveDocuments,
+    cacheKey: 'documents-active',
   });
 
   const [selectedDoc, setSelectedDoc] = useState<MedicalDocument | null>(null);
   const [filter, setFilter] = useState<string>('all');
   const [showOcr, setShowOcr] = useState(false);
+  const [fullDoc, setFullDoc] = useState<MedicalDocument | null>(null);
+  const [loadingOcr, setLoadingOcr] = useState(false);
   const dividerRef = useRef<HTMLDivElement | null>(null);
 
   // Override editor state
@@ -77,6 +79,8 @@ export default function Documents() {
     }
     setEditingOverride(false);
     setShowArchiveRules(false);
+    setShowOcr(false);
+    setFullDoc(null);
   }, [selectedDoc?.id]);
 
   useEffect(() => {
@@ -198,7 +202,16 @@ export default function Documents() {
       } else if (result.expanded) {
         alert('Draft claim updated with the full email group.');
       } else {
-        alert('Draft claim already exists for this email group.');
+        const forceUpdate = confirm(
+          'A draft claim already exists for this document group.\n\n' +
+          'Re-parse the document and update the existing draft with fresh data?'
+        );
+        if (forceUpdate) {
+          const updated = await api.promoteDocumentToDraftClaim(selectedDoc.id, { force: true });
+          alert(updated.expanded
+            ? 'Draft claim updated with re-parsed data.'
+            : 'Draft claim is already up to date.');
+        }
       }
     } catch (err) {
       console.error('Failed to promote document:', err);
@@ -515,7 +528,18 @@ export default function Documents() {
                         </span>
                         <div className="flex gap-2">
                           <button
-                            onClick={() => setShowOcr(!showOcr)}
+                            onClick={async () => {
+                              if (!showOcr && !fullDoc && selectedDoc) {
+                                setLoadingOcr(true);
+                                try {
+                                  const doc = await api.getDocument(selectedDoc.id);
+                                  setFullDoc(doc);
+                                } catch { /* ignore */ }
+                                setLoadingOcr(false);
+                              }
+                              setShowOcr(!showOcr);
+                            }}
+                            disabled={loadingOcr}
                             className={cn(
                               'p-2 border transition-colors',
                               showOcr ? 'bg-bauhaus-black text-white' : 'hover:bg-bauhaus-lightgray'
@@ -935,14 +959,20 @@ export default function Documents() {
                     )}
 
                     {/* OCR text */}
-                    {showOcr && selectedDoc.ocrText && (
+                    {showOcr && (
                       <div>
                         <h3 className="font-bold mb-3">OCR Text</h3>
-                        <div className="p-3 bg-bauhaus-lightgray/50 border border-bauhaus-lightgray max-h-64 overflow-auto">
-                          <pre className="text-sm whitespace-pre-wrap font-mono">
-                            {selectedDoc.ocrText}
-                          </pre>
-                        </div>
+                        {loadingOcr ? (
+                          <div className="p-3 text-sm text-bauhaus-gray">Loading OCR text…</div>
+                        ) : fullDoc?.ocrText ? (
+                          <div className="p-3 bg-bauhaus-lightgray/50 border border-bauhaus-lightgray max-h-64 overflow-auto">
+                            <pre className="text-sm whitespace-pre-wrap font-mono">
+                              {fullDoc.ocrText}
+                            </pre>
+                          </div>
+                        ) : (
+                          <div className="p-3 text-sm text-bauhaus-gray">No OCR text available.</div>
+                        )}
                       </div>
                     )}
                   </>

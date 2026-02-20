@@ -1,7 +1,8 @@
 /**
  * Patient Storage
  *
- * JSON file storage for patient entities.
+ * Backend-aware storage for patient entities.
+ * Uses SQLite when STORAGE_BACKEND=sqlite, otherwise JSON files.
  */
 
 import type {
@@ -14,15 +15,27 @@ import {
   STORAGE_DIRS,
   generateId,
   dateReviver,
+  type StorageOperations,
 } from "./base.js";
+import { getStorageBackend } from "./repository.js";
+import { createRequire } from "node:module";
+
+const esmRequire = createRequire(import.meta.url);
+
+function getPatientsStorage(): StorageOperations<Patient> {
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = esmRequire("./sqlite.js") as typeof import("./sqlite.js");
+    return sqlite.createSqliteRepository<Patient>("patients", [
+      { column: "name", property: "name" },
+    ]) as StorageOperations<Patient>;
+  }
+  return createStorage<Patient>(STORAGE_DIRS.patients, dateReviver);
+}
 
 /**
  * Storage operations for patients.
  */
-export const patientsStorage = createStorage<Patient>(
-  STORAGE_DIRS.patients,
-  dateReviver
-);
+export const patientsStorage = getPatientsStorage();
 
 /**
  * Create a new patient record.

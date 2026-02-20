@@ -165,7 +165,7 @@ export interface MedicalDocument {
   processedAt: string;
 }
 
-export type DraftClaimStatus = "pending" | "accepted" | "rejected";
+export type DraftClaimStatus = "pending" | "accepted" | "rejected" | "submitted";
 export type DraftClaimDateSource = "calendar" | "manual" | "document";
 export type DraftClaimRange = "forever" | "last_month" | "last_week";
 
@@ -218,6 +218,47 @@ export interface DraftClaim {
   acceptedAt?: string;
   rejectedAt?: string;
   archivedAt?: string;
+  // Cigna submission linking fields
+  submissionNumber?: string;
+  scrapedClaimId?: string;
+  cignaClaimNumber?: string;
+  linkedAt?: string;
+}
+
+export type MatchConfidence = "exact" | "high" | "medium" | "low";
+export type MatchMethod = "submission_number" | "scraped_claim_id" | "heuristic";
+
+export interface DraftClaimMatchDetails {
+  submissionNumberMatch: boolean;
+  scrapedClaimIdMatch: boolean;
+  amountMatch: boolean;
+  currencyMatch: boolean;
+  patientMatch: boolean;
+  treatmentDateMatch: boolean;
+  draftAmount?: number;
+  draftCurrency?: string;
+  draftPatient?: string;
+  draftTreatmentDate?: string;
+  scrapedAmount?: number;
+  scrapedCurrency?: string;
+  scrapedPatient?: string;
+  scrapedTreatmentDate?: string;
+}
+
+export interface DraftClaimMatch {
+  scrapedClaimId: string;
+  draftClaimId: string;
+  confidence: MatchConfidence;
+  matchMethod: MatchMethod;
+  matchDetails: DraftClaimMatchDetails;
+}
+
+export interface DraftClaimMatchCandidate {
+  scrapedClaim: ScrapedClaim;
+  draftClaim: DraftClaim;
+  match: DraftClaimMatch;
+  patient: Patient | null;
+  documents: MedicalDocument[];
 }
 
 export interface DocumentClaimAssignment {
@@ -283,6 +324,7 @@ export interface Illness {
   resolvedDate?: string;
   notes?: string;
   relevantAccounts: RelevantAccount[];
+  defaultSymptoms?: Symptom[];
   createdAt: string;
   updatedAt: string;
   archivedAt?: string;
@@ -375,6 +417,7 @@ export const api = {
   getClaim: (id: string) => fetchJson<Claim>(`/claims/${id}`),
   getArchivedClaims: () => fetchJson<Claim[]>("/claims/archived"),
   getActiveClaims: () => fetchJson<Claim[]>("/claims/active"),
+  getClaimByDraftId: (draftId: string) => fetchJson<Claim>(`/claims/by-draft/${draftId}`),
   setClaimArchived: (id: string, archived: boolean) =>
     fetchJson<Claim>(`/claims/${id}/archive`, {
       method: "PUT",
@@ -394,11 +437,14 @@ export const api = {
 
   // Documents
   getDocuments: () => fetchJson<MedicalDocument[]>("/documents"),
+  getActiveDocuments: () => fetchJson<MedicalDocument[]>("/documents/active"),
+  getArchivedDocuments: () => fetchJson<MedicalDocument[]>("/documents/archived"),
   getDocument: (id: string) => fetchJson<MedicalDocument>(`/documents/${id}`),
   getMedicalBills: () => fetchJson<MedicalDocument[]>("/documents/medical-bills"),
-  promoteDocumentToDraftClaim: (id: string) =>
+  promoteDocumentToDraftClaim: (id: string, options?: { force?: boolean }) =>
     fetchJson<PromoteDraftClaimResponse>(`/documents/${id}/promote`, {
       method: "POST",
+      body: JSON.stringify(options ?? {}),
     }),
   setDocumentArchived: (
     id: string,
@@ -560,6 +606,7 @@ export const api = {
     input: {
       illnessId?: string;
       doctorNotes?: string;
+      documentIds?: string[];
       calendarDocumentIds?: string[];
       paymentProofDocumentIds?: string[];
       paymentProofText?: string;
@@ -574,6 +621,29 @@ export const api = {
     fetchJson<{ created: number; assignments: DocumentClaimAssignment[] }>(
       "/draft-claims/run-matching",
       { method: "POST" }
+    ),
+
+  // Draft Claim to Scraped Claim Matching
+  getDraftClaimMatches: () =>
+    fetchJson<DraftClaimMatchCandidate[]>("/draft-claim-matches"),
+
+  autoLinkDraftClaims: () =>
+    fetchJson<{ linked: number }>("/draft-claim-matches/auto-link", {
+      method: "POST",
+    }),
+
+  getLinkedDraftClaims: () =>
+    fetchJson<Array<{ draftClaim: DraftClaim; scrapedClaim: ScrapedClaim | null }>>(
+      "/draft-claim-matches/linked"
+    ),
+
+  acceptDraftClaimMatch: (draftId: string, scrapedClaimId: string) =>
+    fetchJson<{ draft: DraftClaim; scrapedClaim: ScrapedClaim; submissionNumber: string; cignaClaimNumber: string }>(
+      `/draft-claim-matches/${draftId}/accept`,
+      {
+        method: "POST",
+        body: JSON.stringify({ scrapedClaimId }),
+      }
     ),
 
   // Processing
@@ -614,6 +684,27 @@ export const api = {
     formData.append("file", file);
 
     const response = await fetch(`${API_BASE}/proof-upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || `Upload failed: HTTP ${response.status}`);
+    }
+
+    return response.json();
+  },
+
+  /**
+   * Upload a supporting attachment file (invoice, bill, etc).
+   * Returns the created document ID.
+   */
+  uploadAttachmentFile: async (file: File): Promise<{ id: string; filename: string; mimeType: string; size: number }> => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch(`${API_BASE}/attachment-upload`, {
       method: "POST",
       body: formData,
     });

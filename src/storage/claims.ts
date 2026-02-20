@@ -1,7 +1,8 @@
 /**
  * Scraped Claims Storage
  *
- * JSON file storage for claims scraped from Cigna Envoy portal.
+ * Backend-aware storage for claims scraped from Cigna Envoy portal.
+ * Uses SQLite when STORAGE_BACKEND=sqlite, otherwise JSON files.
  */
 
 import type {
@@ -13,15 +14,29 @@ import {
   STORAGE_DIRS,
   generateId,
   dateReviver,
+  type StorageOperations,
 } from "./base.js";
+import { getStorageBackend } from "./repository.js";
+import { createRequire } from "node:module";
+
+const esmRequire = createRequire(import.meta.url);
+
+function getClaimsStorage(): StorageOperations<ScrapedClaim> {
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = esmRequire("./sqlite.js") as typeof import("./sqlite.js");
+    return sqlite.createSqliteRepository<ScrapedClaim>("claims", [
+      { column: "cigna_claim_id", property: "cignaClaimNumber" },
+      { column: "status", property: "status" },
+      { column: "archived_at", property: "archivedAt" },
+    ]) as StorageOperations<ScrapedClaim>;
+  }
+  return createStorage<ScrapedClaim>(STORAGE_DIRS.claims, dateReviver);
+}
 
 /**
  * Storage operations for scraped claims.
  */
-export const claimsStorage = createStorage<ScrapedClaim>(
-  STORAGE_DIRS.claims,
-  dateReviver
-);
+export const claimsStorage = getClaimsStorage();
 
 /**
  * Create a new scraped claim record.

@@ -37,10 +37,7 @@ export default function Patients() {
     upsertItem,
     removeItem,
   } = useUnseenList<Patient>({
-    fetcher: async () => {
-      const all = await api.getPatients();
-      return all.filter((patient) => !patient.archivedAt);
-    },
+    fetcher: api.getActivePatients,
     cacheKey: 'patients',
   });
   const [archiving, setArchiving] = useState(false);

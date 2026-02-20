@@ -1,19 +1,39 @@
 /**
  * Submitted Claims Storage
  *
- * JSON file storage for claims submitted via Cigna Envoy automation.
+ * Backend-aware storage for claims submitted via Cigna Envoy automation.
+ * Uses SQLite when STORAGE_BACKEND=sqlite, otherwise JSON files.
  */
 
 import type { Claim, CreateClaimInput, UpdateClaimInput } from "../types/claim.js";
-import { createStorage, STORAGE_DIRS, generateId, dateReviver } from "./base.js";
+import {
+  createStorage,
+  STORAGE_DIRS,
+  generateId,
+  dateReviver,
+  type StorageOperations,
+} from "./base.js";
+import { getStorageBackend } from "./repository.js";
+import { createRequire } from "node:module";
+
+const esmRequire = createRequire(import.meta.url);
+
+function getSubmittedClaimsStorage(): StorageOperations<Claim> {
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = esmRequire("./sqlite.js") as typeof import("./sqlite.js");
+    return sqlite.createSqliteRepository<Claim>("submitted_claims", [
+      { column: "cigna_claim_id", property: "cignaClaimId" },
+      { column: "status", property: "status" },
+      { column: "archived_at", property: "archivedAt" },
+    ]) as StorageOperations<Claim>;
+  }
+  return createStorage<Claim>(STORAGE_DIRS.submittedClaims, dateReviver);
+}
 
 /**
  * Storage operations for submitted claims.
  */
-export const submittedClaimsStorage = createStorage<Claim>(
-  STORAGE_DIRS.submittedClaims,
-  dateReviver
-);
+export const submittedClaimsStorage = getSubmittedClaimsStorage();
 
 /**
  * Create a new submitted claim record.

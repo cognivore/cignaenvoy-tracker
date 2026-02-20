@@ -1,7 +1,7 @@
 /**
  * Document-Claim Assignments Storage
  *
- * JSON file storage for document-to-claim assignments.
+ * Backend-aware storage for document-to-claim assignments.
  */
 
 import type {
@@ -15,15 +15,26 @@ import {
   STORAGE_DIRS,
   generateId,
   dateReviver,
+  type StorageOperations,
 } from "./base.js";
+import { getStorageBackend } from "./repository.js";
+import { createRequire } from "node:module";
 
-/**
- * Storage operations for assignments.
- */
-export const assignmentsStorage = createStorage<DocumentClaimAssignment>(
-  STORAGE_DIRS.assignments,
-  dateReviver
-);
+const esmRequire = createRequire(import.meta.url);
+
+function getAssignmentsStorage(): StorageOperations<DocumentClaimAssignment> {
+  if (getStorageBackend() === "sqlite") {
+    const sqlite = esmRequire("./sqlite.js") as typeof import("./sqlite.js");
+    return sqlite.createSqliteRepository<DocumentClaimAssignment>("assignments", [
+      { column: "document_id", property: "documentId" },
+      { column: "claim_id", property: "claimId" },
+      { column: "status", property: "status" },
+    ]) as StorageOperations<DocumentClaimAssignment>;
+  }
+  return createStorage<DocumentClaimAssignment>(STORAGE_DIRS.assignments, dateReviver);
+}
+
+export const assignmentsStorage = getAssignmentsStorage();
 
 /**
  * Create a new assignment (candidate).
