@@ -74,8 +74,8 @@ function initializeSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_documents_classification ON documents(classification);
     CREATE INDEX IF NOT EXISTS idx_documents_archived_at ON documents(archived_at);
     CREATE INDEX IF NOT EXISTS idx_documents_processed_at ON documents(processed_at);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_email_source ON documents(email_id, source_type) WHERE email_id IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_attachment ON documents(attachment_path) WHERE attachment_path IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_documents_email_source ON documents(email_id, source_type) WHERE email_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_documents_attachment ON documents(attachment_path) WHERE attachment_path IS NOT NULL;
 
     -- Attachment processing records
     CREATE TABLE IF NOT EXISTS attachment_processing (

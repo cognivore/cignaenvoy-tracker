@@ -17,7 +17,7 @@ import {
     getPrimaryPaymentSignal,
     hasPaymentSignal,
 } from "./payment-signal.js";
-import { toDraftClaimPayment } from "./draft-claim-payments.js";
+import { toDraftClaimPayment, createEmptyPayment } from "./draft-claim-payments.js";
 import { dedupeIds } from "./ids.js";
 import { resolvePaymentProofDocuments } from "./payment-proof.js";
 
@@ -59,13 +59,21 @@ function isWithinRange(
     return docDate >= start && docDate <= now;
 }
 
+const DEFAULT_CURRENCY = "EUR";
+const EMPTY_PAYMENT_CONTEXT = "No payment signal detected — set amount manually";
+
 /**
  * Convert a document's primary payment signal into a draft claim payment snapshot.
+ * Falls back to an empty payment for medical_bill documents whose OCR didn't
+ * extract recognisable amounts.
  */
 function buildDraftPayment(document: MedicalDocument) {
     const signal = getPrimaryPaymentSignal(document);
-    if (!signal) return null;
-    return toDraftClaimPayment(signal);
+    if (signal) return toDraftClaimPayment(signal);
+    if (document.classification === "medical_bill") {
+        return createEmptyPayment(DEFAULT_CURRENCY, EMPTY_PAYMENT_CONTEXT);
+    }
+    return null;
 }
 
 /**
@@ -91,13 +99,15 @@ export async function generateDraftClaims(
 
     const billLikeClasses = new Set(["medical_bill", "receipt"]);
 
-    // Filter candidates: attachments with a payment signal, not already assigned or drafted
+    // Filter candidates: bill-like attachments, not already assigned or drafted.
+    // medical_bill documents pass even without a detected payment signal —
+    // the classification itself is evidence of an invoice.
     const candidates = documents.filter(
         (document) =>
             document.sourceType === "attachment" &&
             !document.archivedAt &&
             billLikeClasses.has(document.classification) &&
-            hasPaymentSignal(document) &&
+            (hasPaymentSignal(document) || document.classification === "medical_bill") &&
             !assignedDocumentIds.has(document.id) &&
             !draftDocumentIds.has(document.id) &&
             isWithinRange(document, range, now)

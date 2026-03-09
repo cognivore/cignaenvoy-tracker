@@ -1126,12 +1126,12 @@ routes.POST["/api/draft-claims/:id/submit"] = async (_req, _res, params, body) =
       });
 
       // Browser stays open for manual submission - don't cleanup immediately
-      // Wait 15 minutes for human to complete, then cleanup
-      console.log("Browser ready for manual submission. Will auto-close in 15 minutes.");
+      // Wait 30 minutes for human to complete, then cleanup
+      console.log("Browser ready for manual submission. Will auto-close in 30 minutes.");
       setTimeout(async () => {
         console.log("Auto-closing submission browser...");
         await submitter.cleanup();
-      }, 15 * 60 * 1000);
+      }, 30 * 60 * 1000);
 
     } catch (err) {
       console.error("Submission preparation failed:", err);

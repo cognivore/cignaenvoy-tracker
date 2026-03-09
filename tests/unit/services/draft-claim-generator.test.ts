@@ -210,13 +210,49 @@ describe("Draft claim generator", () => {
     expect(created[0]?.payment.source).toBe("override");
   });
 
-  it("does not create drafts for documents without any payment signal", async () => {
+  it("does not create drafts for non-bill documents without any payment signal", async () => {
     const { documents, generator } = await loadModules();
 
     await documents.createMedicalDocument({
       sourceType: "attachment",
       detectedAmounts: [],
       classification: "correspondence",
+      medicalKeywords: [],
+      date: new Date("2026-01-10"),
+    });
+
+    const created = await generator.generateDraftClaims("forever", new Date("2026-01-16"));
+
+    expect(created).toHaveLength(0);
+  });
+
+  it("creates draft claim for medical_bill without detected amounts (empty payment)", async () => {
+    const { documents, generator } = await loadModules();
+
+    const doc = await documents.createMedicalDocument({
+      sourceType: "attachment",
+      detectedAmounts: [],
+      classification: "medical_bill",
+      medicalKeywords: ["invoice", "therapy"],
+      date: new Date("2026-01-10"),
+    });
+
+    const created = await generator.generateDraftClaims("forever", new Date("2026-01-16"));
+
+    expect(created).toHaveLength(1);
+    const draft = created[0]!;
+    expect(draft.primaryDocumentId).toBe(doc.id);
+    expect(draft.payment.amount).toBe(0);
+    expect(draft.payment.currency).toBe("EUR");
+  });
+
+  it("does not create draft for receipt without detected amounts", async () => {
+    const { documents, generator } = await loadModules();
+
+    await documents.createMedicalDocument({
+      sourceType: "attachment",
+      detectedAmounts: [],
+      classification: "receipt",
       medicalKeywords: [],
       date: new Date("2026-01-10"),
     });

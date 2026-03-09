@@ -35,32 +35,36 @@ function dateReviver(_key: string, value: unknown): unknown {
  * Extract indexed field value from entity.
  */
 /**
- * Property name to column name mapping for migration.
- * Entity JSON uses camelCase; DB columns use snake_case.
+ * Convert snake_case column name to camelCase property name.
+ * e.g. "email_id" → "emailId", "source_type" → "sourceType"
  */
-const FIELD_ALIASES: Record<string, string> = {
-  cignaClaimId: "cigna_claim_id",
-  cignaClaimNumber: "cigna_claim_id",
-  archivedAt: "archived_at",
-  documentId: "document_id",
-  claimId: "claim_id",
-  patientId: "patient_id",
+function snakeToCamel(s: string): string {
+  return s.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
+/**
+ * Extra aliases for columns where camelCase doesn't match 1:1.
+ */
+const EXTRA_ALIASES: Record<string, string[]> = {
+  cigna_claim_id: ["cignaClaimId", "cignaClaimNumber"],
 };
 
 function getFieldValue(entity: Record<string, unknown>, columnName: string): string | null {
-  let value = entity[columnName];
+  // Primary: try the camelCase equivalent of the column name
+  const camelProp = snakeToCamel(columnName);
+  let value = entity[camelProp] ?? entity[columnName];
+
+  // Fallback: check extra aliases
   if (value === undefined || value === null) {
-    const props = Object.entries(FIELD_ALIASES)
-      .filter(([, col]) => col === columnName)
-      .map(([prop]) => prop);
-    for (const prop of props) {
-      const v = entity[prop];
+    for (const alias of EXTRA_ALIASES[columnName] ?? []) {
+      const v = entity[alias];
       if (v !== undefined && v !== null) {
         value = v;
         break;
       }
     }
   }
+
   if (value === undefined || value === null) return null;
   if (value instanceof Date) return value.toISOString();
   return String(value);

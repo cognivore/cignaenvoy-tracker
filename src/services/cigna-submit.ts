@@ -146,7 +146,7 @@ export class CignaSubmitter {
       ...config,
       headless: config.headless ?? false,
       pauseBeforeSubmit: config.pauseBeforeSubmit ?? false,
-      pauseTimeoutMs: config.pauseTimeoutMs ?? 15 * 60 * 1000,
+      pauseTimeoutMs: config.pauseTimeoutMs ?? 30 * 60 * 1000,
     };
   }
 
@@ -2305,7 +2305,8 @@ export class CignaSubmitter {
     if (!this.driver) throw new Error("Driver not initialized");
     console.log("  Waiting for review page (progress >= 95%)...");
     const start = Date.now();
-    while (Date.now() - start < CIGNA_TIMING.pageLoad * 2) {
+    const uploadTimeoutMs = CIGNA_TIMING.pageLoad * 10; // 10 min — uploads are very slow
+    while (Date.now() - start < uploadTimeoutMs) {
       const progress = await this.getProgress();
       console.log(`    Current progress: ${progress}%`);
       if (progress >= 95) {
@@ -2332,7 +2333,7 @@ export class CignaSubmitter {
     console.log("  ║  READY FOR MANUAL SUBMISSION                               ║");
     console.log("  ║                                                            ║");
     console.log("  ║  Review the claim details, then click Submit.              ║");
-    console.log("  ║  The browser will close automatically in 15 minutes,       ║");
+    console.log("  ║  The browser will close automatically in 30 minutes,       ║");
     console.log("  ║  or you can close it manually after submission.            ║");
     console.log("  ║                                                            ║");
     console.log("  ║  Cigna will assign a Submission ID - our background        ║");

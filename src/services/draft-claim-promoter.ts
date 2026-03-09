@@ -72,7 +72,6 @@ function buildGroupPayment(
       primaryDocumentId: best.docId,
     };
   }
-
   return {
     payment: createEmptyPayment(DEFAULT_CURRENCY, EMPTY_PAYMENT_CONTEXT),
     primaryDocumentId: fallbackDocument.id,
@@ -100,6 +99,20 @@ export async function promoteDocumentToDraftClaim(
   );
 
   if (existingByDocId && !force) {
+    // Fast path: draft exists. But if its payment is stale (€0.00),
+    // reload the email group and try to find a real signal before
+    // giving up. getGroupDocuments is an indexed query — cheap.
+    if (existingByDocId.payment.amount === 0) {
+      const groupDocs = await getGroupDocuments(selectedDocument);
+      const { payment, primaryDocumentId } = buildGroupPayment(groupDocs, selectedDocument);
+      if (payment.amount > 0) {
+        const refreshed = await updateDraftClaim(existingByDocId.id, {
+          payment,
+          primaryDocumentId,
+        });
+        return { draft: refreshed ?? existingByDocId, created: false, expanded: true };
+      }
+    }
     return { draft: existingByDocId, created: false, expanded: false };
   }
 
